@@ -28,7 +28,6 @@ class HytopiaWorldImporter:
         self.material_manager = HytopiaMaterialManager()
         self.mesh_generator = HytopiaBlockMesh()
         self.imported_objects = []  # Track imported objects for cleanup
-        self.world_map_collection = None  # Collection for all imported map content
         
     def import_world(self,
                     map_file_path: str,
@@ -93,9 +92,6 @@ class HytopiaWorldImporter:
             )
             print(f"Centering offset: {center_offset} (will move imported content to origin)")
             
-            # Create or get the world map collection
-            self._setup_world_map_collection()
-            
             # Import blocks if requested
             if import_blocks:
                 success = self._import_blocks(map_data, block_registry, min_bounds, max_bounds, cull_faces, center_offset)
@@ -115,9 +111,6 @@ class HytopiaWorldImporter:
             
             # Hide relationship lines in viewport overlay for all imported objects
             self._hide_relationship_lines()
-            
-            # Final cleanup: ensure ALL imported objects are in the collection
-            self._ensure_all_objects_in_collection()
             
             return True
             
@@ -236,10 +229,7 @@ class HytopiaWorldImporter:
                 # Create mesh object
                 mesh_name = f"Hytopia_{block_name}"
                 mesh_obj = bpy.data.objects.new(mesh_name, mesh)
-                
-                # Move to world map collection
-                self._move_object_to_world_map_collection(mesh_obj)
-                
+                bpy.context.collection.objects.link(mesh_obj)
                 self.imported_objects.append(mesh_obj)
                 
                 # Debug: Check if mesh has UV coordinates
@@ -482,8 +472,7 @@ class HytopiaWorldImporter:
             print(f"   Step 6: Positioned at: {final_position}")
             print(f"   Height centering offset applied to Z: {current_location[2]:.3f}")
             
-            # Move to world map collection and track object
-            self._move_object_to_world_map_collection(model_object)
+            # Track object
             bpy.context.view_layer.update()
             self.imported_objects.append(model_object)
             
@@ -599,15 +588,6 @@ class HytopiaWorldImporter:
         # Clear materials cache
         self.material_manager.clear_cache()
         
-        # Clear world map collection if it exists and is empty
-        if self.world_map_collection and len(self.world_map_collection.objects) == 0:
-            try:
-                bpy.data.collections.remove(self.world_map_collection)
-                self.world_map_collection = None
-                print("Removed empty World Map collection")
-            except:
-                pass
-        
         print("Cleared imported objects")
     
     def _hide_relationship_lines(self):
@@ -700,144 +680,6 @@ class HytopiaWorldImporter:
                                     
         except Exception as e:
             print(f"Warning: Could not set GLTF materials specular to 0: {e}")
-    
-    def _setup_world_map_collection(self):
-        """
-        Create or get the world map collection for organizing imported content.
-        """
-        try:
-            collection_name = "World Map"
-            
-            # Check if collection already exists
-            if collection_name in bpy.data.collections:
-                self.world_map_collection = bpy.data.collections[collection_name]
-                print(f"Using existing collection: {collection_name}")
-            else:
-                # Create new collection
-                self.world_map_collection = bpy.data.collections.new(collection_name)
-                # Link to scene
-                bpy.context.scene.collection.children.link(self.world_map_collection)
-                print(f"Created new collection: {collection_name}")
-                
-        except Exception as e:
-            print(f"Warning: Could not setup world map collection: {e}")
-            self.world_map_collection = None
-    
-    def _move_object_to_world_map_collection(self, obj):
-        """
-        Move an object to the world map collection while preserving visual hierarchy.
-        Only moves the top-level parent - children follow automatically.
-        
-        Args:
-            obj: Blender object to move
-        """
-        try:
-            if self.world_map_collection and obj:
-                # Find the top-level parent of this object
-                top_parent = self._find_top_level_parent(obj)
-                
-                # Only move the top-level parent to the collection
-                # Children will automatically be included through the hierarchy
-                if top_parent and top_parent.name in bpy.data.objects:
-                    # IMPORTANT: Remove from ALL collections first
-                    collections_to_remove = list(top_parent.users_collection)
-                    for collection in collections_to_remove:
-                        collection.objects.unlink(top_parent)
-                    
-                    # Add ONLY to world map collection
-                    self.world_map_collection.objects.link(top_parent)
-                    
-                    print(f"   Moved top-level parent '{top_parent.name}' to World Map collection")
-                
-        except Exception as e:
-            print(f"Warning: Could not move object to world map collection: {e}")
-    
-    def _find_top_level_parent(self, obj):
-        """
-        Find the top-level parent of an object (the root of its hierarchy).
-        
-        Args:
-            obj: Blender object
-            
-        Returns:
-            Top-level parent object
-        """
-        current = obj
-        while current.parent:
-            current = current.parent
-        return current
-    
-    def _get_all_children(self, obj):
-        """
-        Recursively get all children of an object.
-        
-        Args:
-            obj: Parent object
-            
-        Returns:
-            List of all child objects
-        """
-        children = []
-        for child in obj.children:
-            children.append(child)
-            children.extend(self._get_all_children(child))
-        return children
-    
-    def _ensure_all_objects_in_collection(self):
-        """
-        Final cleanup: ensure ALL imported objects and their hierarchies are in the World Map collection.
-        This catches any objects that might have been missed during the import process.
-        """
-        try:
-            if not self.world_map_collection:
-                return
-                
-            print("Ensuring all imported objects are in World Map collection...")
-            
-            # Get all top-level parents that should be in the collection
-            top_level_parents = set()
-            
-            # Add all imported objects - find their top-level parents
-            for obj in self.imported_objects:
-                if obj and obj.name in bpy.data.objects:
-                    top_parent = self._find_top_level_parent(obj)
-                    top_level_parents.add(top_parent)
-            
-            # Also check for any objects with "hytopia" or "entity_" in their name
-            # that might not be in our imported_objects list
-            for obj in bpy.data.objects:
-                if (obj.name.lower().startswith('hytopia_') or 
-                    obj.name.lower().startswith('entity_') or
-                    obj.name.lower().startswith('bone_cluster') or
-                    obj.name.lower().startswith('test_')):
-                    top_parent = self._find_top_level_parent(obj)
-                    top_level_parents.add(top_parent)
-            
-            # Move only the top-level parents to the collection
-            moved_count = 0
-            for top_parent in top_level_parents:
-                if top_parent and top_parent.name in bpy.data.objects:
-                    # Check if object is already ONLY in the world map collection
-                    if (len(top_parent.users_collection) != 1 or 
-                        self.world_map_collection not in top_parent.users_collection):
-                        
-                        # Remove from ALL collections first
-                        collections_to_remove = list(top_parent.users_collection)
-                        for collection in collections_to_remove:
-                            collection.objects.unlink(top_parent)
-                        
-                        # Add ONLY to world map collection
-                        self.world_map_collection.objects.link(top_parent)
-                        moved_count += 1
-                        print(f"   Moved top-level parent '{top_parent.name}' to World Map collection")
-            
-            if moved_count > 0:
-                print(f"✓ Moved {moved_count} additional objects to World Map collection")
-            else:
-                print("✓ All objects already in World Map collection")
-                
-        except Exception as e:
-            print(f"Warning: Could not ensure all objects in collection: {e}")
     
     def _print_import_stats(self):
         """Print statistics about the import process."""
