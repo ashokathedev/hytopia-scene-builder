@@ -1,0 +1,116 @@
+# DEBUG: Step-by-step model import tracing
+import bpy
+import os
+
+print("=" * 80)
+print("DEBUGGING MODEL IMPORT STEP BY STEP")
+print("=" * 80)
+
+# Clear scene
+bpy.ops.object.select_all(action='SELECT')  
+bpy.ops.object.delete(use_global=False)
+
+# Test data from your desert map
+test_coords = (27.5, 1.962, -160.5)  # Hytopia coordinates
+test_scale = 1.12
+
+print(f"STEP 1: Input Data")
+print(f"   Hytopia coords: {test_coords}")
+print(f"   Scale: {test_scale}")
+
+# Step 2: Coordinate conversion (manual)
+blender_coords = (-test_coords[0], test_coords[2], test_coords[1])
+print(f"\nSTEP 2: Coordinate Conversion") 
+print(f"   Hytopia coords: {test_coords}")
+print(f"   Blender coords: {blender_coords}")
+
+# Find your model file - adjust this path to match your setup
+model_path = r"E:\Hytopia\98-utilities\hytopia-world-to-blender\Maps\Models\models\environment\dead-tree-small.gltf"
+print(f"\nSTEP 3: Model Path")
+print(f"   Path: {model_path}")
+print(f"   Exists: {os.path.exists(model_path)}")
+
+if os.path.exists(model_path):
+    # Import GLTF
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.import_scene.gltf(filepath=model_path)
+    
+    imported_objects = [obj for obj in bpy.context.selected_objects]
+    mesh_objects = [obj for obj in imported_objects if obj.type == 'MESH']
+    
+    print(f"\nSTEP 4: Import Results")  
+    print(f"   Imported objects: {len(imported_objects)}")
+    print(f"   Mesh objects: {len(mesh_objects)}")
+    
+    if mesh_objects:
+        final_object = mesh_objects[0]
+        print(f"   Using: {final_object.name}")
+        print(f"   Original location: {final_object.location}")
+        
+        # Apply scale
+        final_object.scale = (test_scale, test_scale, test_scale)
+        bpy.context.view_layer.update()
+        
+        # Analyze bounding box
+        print(f"\nSTEP 5: Bounding Box Analysis")
+        bound_box = final_object.bound_box
+        
+        min_x = min(corner[0] for corner in bound_box)
+        max_x = max(corner[0] for corner in bound_box) 
+        min_y = min(corner[1] for corner in bound_box)
+        max_y = max(corner[1] for corner in bound_box)
+        min_z = min(corner[2] for corner in bound_box)
+        max_z = max(corner[2] for corner in bound_box)
+        
+        local_center = ((min_x+max_x)/2, (min_y+max_y)/2, (min_z+max_z)/2)
+        scaled_center = (local_center[0]*test_scale, local_center[1]*test_scale, local_center[2]*test_scale)
+        
+        print(f"   Bounding box min: ({min_x:.3f}, {min_y:.3f}, {min_z:.3f})")
+        print(f"   Bounding box max: ({max_x:.3f}, {max_y:.3f}, {max_z:.3f})")
+        print(f"   Local center: {local_center}")
+        print(f"   Scaled center: {scaled_center}")
+        
+        # Position calculation
+        print(f"\nSTEP 6: Position Calculation")
+        grid_offset = (0.5, 0.5, 0.5)
+        print(f"   Target (Blender coords): {blender_coords}")
+        print(f"   Grid offset: {grid_offset}") 
+        print(f"   Scaled bbox center: {scaled_center}")
+        
+        final_position = (
+            blender_coords[0] - grid_offset[0] - scaled_center[0],
+            blender_coords[1] - grid_offset[1] - scaled_center[1], 
+            blender_coords[2] - grid_offset[2] - scaled_center[2]
+        )
+        
+        print(f"   Final calculation: {blender_coords} - {grid_offset} - {scaled_center} = {final_position}")
+        
+        # Apply position
+        final_object.location = final_position
+        final_object.name = f"DEBUG_tree"
+        
+        # Add reference cubes
+        bpy.ops.mesh.primitive_cube_add(location=blender_coords)
+        ref1 = bpy.context.active_object
+        ref1.name = "REF_HytopiaPos"
+        ref1.scale = (0.1, 0.1, 0.1)
+        
+        bpy.ops.mesh.primitive_cube_add(location=final_position)  
+        ref2 = bpy.context.active_object
+        ref2.name = "REF_CalculatedPos"
+        ref2.scale = (0.2, 0.2, 0.2)
+        
+        print(f"\nRESULTS:")
+        print(f"   Tree final Z position: {final_position[2]:.3f}")
+        print(f"   Expected around: -4.0")
+        print(f"   Difference: {final_position[2] - (-4):.3f}")
+        
+    else:
+        print("   ERROR: No mesh objects imported")
+else:
+    print("   ERROR: Model file not found!")
+    print("   Update the model_path variable above to point to your dead-tree-small.gltf file")
+
+print("\n" + "=" * 80)
+print("DEBUG COMPLETE")
+print("=" * 80)

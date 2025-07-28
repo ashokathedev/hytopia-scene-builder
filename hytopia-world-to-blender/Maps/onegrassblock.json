@@ -1,0 +1,16 @@
+{
+  "blockTypes": [
+    {
+      "id": 23,
+      "name": "grass",
+      "textureUri": "blocks/grass",
+      "isCustom": false,
+      "isMultiTexture": true
+    }
+  ],
+  "blocks": {
+    "1,0,1": 23
+  },
+  "entities": {},
+  "version": "1.5.0"
+}
