@@ -109,6 +109,9 @@ class HytopiaWorldImporter:
             print("=== Import Complete ===")
             self._print_import_stats()
             
+            # Move imported objects to "World Map" collection
+            self._move_objects_to_world_map_collection()
+            
             # Hide relationship lines in viewport overlay for all imported objects
             self._hide_relationship_lines()
             
@@ -476,6 +479,16 @@ class HytopiaWorldImporter:
             bpy.context.view_layer.update()
             self.imported_objects.append(model_object)
             
+            # Also track all the original imported objects (including empty parent objects)
+            # that might not be the final model_object but are part of the hierarchy
+            for original_obj in imported_objects:
+                if (original_obj and 
+                    original_obj.name in bpy.data.objects and 
+                    original_obj != model_object and
+                    original_obj not in self.imported_objects):
+                    self.imported_objects.append(original_obj)
+                    print(f"   Also tracking original object: {original_obj.name}")
+            
             print(f"✓ Imported: {model_object.name}")
             return True
                 
@@ -624,6 +637,189 @@ class HytopiaWorldImporter:
             
         except Exception as e:
             print(f"Warning: Could not hide relationship lines: {e}")
+    
+    def _move_objects_to_world_map_collection(self):
+        """
+        Move all imported objects to a new "World Map" collection.
+        This includes the entire hierarchy of objects (parents and children).
+        Uses a comprehensive approach to find all related objects.
+        """
+        try:
+            if not self.imported_objects:
+                print("No objects to move to collection")
+                return
+            
+            # Create or get the "World Map" collection
+            world_map_collection = bpy.data.collections.get("World Map")
+            if not world_map_collection:
+                world_map_collection = bpy.data.collections.new("World Map")
+                # Link the collection to the scene
+                bpy.context.scene.collection.children.link(world_map_collection)
+                print("Created new 'World Map' collection")
+            else:
+                print("Using existing 'World Map' collection")
+            
+            # Find all objects that should be moved by looking for naming patterns
+            objects_to_move = set()
+            
+            # Get all unique base names from our imported objects
+            base_names = set()
+            for obj in self.imported_objects:
+                if obj and obj.name in bpy.data.objects:
+                    base_name = self._extract_base_name(obj.name)
+                    if base_name:
+                        base_names.add(base_name)
+            
+            print(f"Found base names: {list(base_names)}")
+            
+            # For each base name, find ALL objects in the scene that match the pattern
+            for base_name in base_names:
+                matching_objects = self._find_all_matching_objects(base_name)
+                print(f"Base name '{base_name}' matches {len(matching_objects)} objects: {[obj.name for obj in matching_objects]}")
+                
+                # Add all matching objects and their hierarchies
+                for obj in matching_objects:
+                    objects_to_move.add(obj)
+                    
+                    # Also add all children and parents
+                    self._add_hierarchy_to_set(obj, objects_to_move)
+            
+            print(f"Moving {len(objects_to_move)} objects to 'World Map' collection...")
+            
+            # Move each object to the new collection
+            moved_count = 0
+            for obj in objects_to_move:
+                try:
+                    # Remove from current collection(s)
+                    for collection in obj.users_collection:
+                        collection.objects.unlink(obj)
+                    
+                    # Add to World Map collection
+                    world_map_collection.objects.link(obj)
+                    moved_count += 1
+                    
+                except Exception as e:
+                    print(f"Warning: Could not move object {obj.name}: {e}")
+            
+            print(f"✓ Moved {moved_count} objects to 'World Map' collection")
+            
+        except Exception as e:
+            print(f"Error moving objects to collection: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _find_root_object(self, obj: bpy.types.Object) -> bpy.types.Object:
+        """
+        Find the root object (top of hierarchy) by traversing up the parent chain.
+        Also looks for the original GLTF root object that may not have been renamed.
+        
+        Args:
+            obj: The starting object
+            
+        Returns:
+            The root object (object with no parent)
+        """
+        current_obj = obj
+        
+        # First traverse up the parent chain to find the actual root
+        while current_obj.parent:
+            if current_obj.parent.name in bpy.data.objects:
+                current_obj = current_obj.parent
+            else:
+                break
+        
+        # Check if this object name suggests it's a renamed object (contains underscores from our renaming)
+        # If so, look for the original GLTF root object that might have the original name
+        if '_' in current_obj.name and not current_obj.name.startswith('entity_'):
+            # Extract the base name (e.g., "bone_cluster_002" -> "bone_cluster")
+            base_name_parts = current_obj.name.split('_')
+            if len(base_name_parts) >= 2:
+                # Try to find the original GLTF object with dashes instead of underscores
+                original_name = '-'.join(base_name_parts[:-1])  # "bone_cluster" -> "bone-cluster"
+                
+                # Look for the original GLTF object in the scene
+                if original_name in bpy.data.objects:
+                    original_obj = bpy.data.objects[original_name]
+                    # Check if this original object is actually the parent or root
+                    if not original_obj.parent or original_obj == current_obj.parent:
+                        print(f"   Found original GLTF root: {original_obj.name} (started from: {obj.name})")
+                        return original_obj
+        
+        print(f"   Found root object: {current_obj.name} (started from: {obj.name})")
+        return current_obj
+    
+    def _extract_base_name(self, obj_name: str) -> str:
+        """
+        Extract the base name from an object name, handling various naming patterns.
+        
+        Examples:
+        - "entity_bone_cluster" -> "bone_cluster"
+        - "bone_cluster_002" -> "bone_cluster" 
+        - "bone-cluster" -> "bone_cluster"
+        - "bone-cluster.001" -> "bone_cluster"
+        - "Hytopia_grass" -> "grass"
+        """
+        name = obj_name
+        
+        # Remove "entity_" prefix if present
+        if name.startswith("entity_"):
+            name = name[7:]  # Remove "entity_"
+        
+        # Remove "Hytopia_" prefix if present
+        if name.startswith("Hytopia_"):
+            name = name[8:]  # Remove "Hytopia_"
+        
+        # Convert dashes to underscores for consistency
+        name = name.replace('-', '_')
+        
+        # Remove Blender's automatic numbering (.001, .002, etc.)
+        if '.' in name:
+            name = name.split('.')[0]
+        
+        # Remove our custom numbering (_002, _003, etc.)
+        parts = name.split('_')
+        if len(parts) > 1 and parts[-1].isdigit() and len(parts[-1]) == 3:
+            name = '_'.join(parts[:-1])
+        
+        return name
+    
+    def _find_all_matching_objects(self, base_name: str) -> list:
+        """
+        Find all objects in the scene that match the base name pattern.
+        
+        This includes:
+        - Original GLTF names with dashes: "bone-cluster", "bone-cluster.001"
+        - Renamed objects with underscores: "bone_cluster", "bone_cluster_002"
+        - Entity objects: "entity_bone_cluster"
+        - Block objects: "Hytopia_grass"
+        """
+        matching_objects = []
+        dash_name = base_name.replace('_', '-')  # "bone_cluster" -> "bone-cluster"
+        
+        for obj in bpy.data.objects:
+            obj_base = self._extract_base_name(obj.name)
+            if obj_base == base_name:
+                matching_objects.append(obj)
+                
+        return matching_objects
+    
+    def _add_hierarchy_to_set(self, obj: bpy.types.Object, obj_set: set):
+        """
+        Add an object and its entire hierarchy (parents and children) to a set.
+        """
+        # Add all parents
+        current = obj.parent
+        while current:
+            obj_set.add(current)
+            current = current.parent
+        
+        # Add all children recursively
+        def add_children(parent_obj):
+            for child in parent_obj.children:
+                obj_set.add(child)
+                add_children(child)
+        
+        add_children(obj)
     
     def _rename_imported_objects(self, imported_objects: list, model_uri: str):
         """
