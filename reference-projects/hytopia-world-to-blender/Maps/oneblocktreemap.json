@@ -1,0 +1,35 @@
+{
+  "blockTypes": [
+    {
+      "id": 36,
+      "name": "jungle-dirt",
+      "textureUri": "blocks/jungle-dirt.png",
+      "isCustom": false,
+      "isMultiTexture": false
+    }
+  ],
+  "blocks": {
+    "0,0,0": 36
+  },
+  "entities": {
+    "0.500816246225743,2.2824577053157484,0.5500070345599597": {
+      "modelUri": "models/environment/dead-tree-small.gltf",
+      "modelPreferredShape": "trimesh",
+      "modelLoopedAnimations": [
+        "idle"
+      ],
+      "modelScale": 1,
+      "name": "dead-tree-small",
+      "rigidBodyOptions": {
+        "type": "fixed",
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      }
+    }
+  },
+  "version": "1.5.0"
+}
