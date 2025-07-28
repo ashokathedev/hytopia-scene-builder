@@ -27,7 +27,8 @@ class HytopiaBlockMesh:
     def create_block_mesh(self, 
                          blocks: Dict[Tuple[float, float, float], int],
                          block_registry: Dict[int, Dict[str, Any]],
-                         cull_faces: bool = True) -> bpy.types.Mesh:
+                         cull_faces: bool = True,
+                         center_offset: Tuple[float, float, float] = (0, 0, 0)) -> bpy.types.Mesh:
         """
         Create a single mesh containing all blocks with proper face culling.
         
@@ -69,7 +70,7 @@ class HytopiaBlockMesh:
             # Generate geometry for visible faces
             face_count = 0
             for face_data in visible_faces:
-                self._create_face(face_data, block_registry)
+                self._create_face(face_data, block_registry, center_offset)
                 face_count += 1
                 
                 # Progress reporting
@@ -194,7 +195,7 @@ class HytopiaBlockMesh:
         
         return all_faces
     
-    def _create_face(self, face_data: Dict[str, Any], block_registry: Dict[int, Dict[str, Any]]):
+    def _create_face(self, face_data: Dict[str, Any], block_registry: Dict[int, Dict[str, Any]], center_offset: Tuple[float, float, float] = (0, 0, 0)):
         """
         Create a single face in the bmesh.
         
@@ -214,10 +215,11 @@ class HytopiaBlockMesh:
             # Hytopia: (X, Y, Z) where Y is height
             # Blender: (X, Z, Y) where Z is height
             # Also flip X axis to fix left/right mirroring
+            # Apply center offset to move imported content to origin
             vert_pos = (
-                -(position[0] + offset[0]) + 1,  # Negate X to fix left/right mirroring and shift
-                (position[2] + offset[2]) - 1,   # Hytopia Z becomes Blender Y and shift
-                position[1] + offset[1]     # Hytopia Y becomes Blender Z (height)
+                -(position[0] + offset[0]) + 1 + center_offset[0],  # Negate X + center offset
+                (position[2] + offset[2]) - 1 + center_offset[1],   # Hytopia Z becomes Blender Y + center offset
+                position[1] + offset[1] + center_offset[2]     # Hytopia Y becomes Blender Z (height) + center offset
             )
             
             # Always create new vertices for cleaner face separation

@@ -198,17 +198,6 @@ class HYTOPIA_PT_main_panel(Panel):
         box.label(text="1. Map Importer", icon='WORLD')
         box.operator("hytopia.import_world", text="Import World Map", icon='IMPORT')
         
-        # Quick settings for map importer
-        col = box.column(align=True)
-        col.label(text="Quick Settings:")
-        
-        scene = context.scene
-        hytopia_props = scene.hytopia_import_props
-        
-        col.prop(hytopia_props, "quick_texture_path", text="Textures")
-        col.prop(hytopia_props, "quick_model_path", text="Models")
-        col.prop(hytopia_props, "quick_bounds_size", text="Bounds Size")
-        
         # Character Importer Section (Coming Soon)
         box = layout.box()
         box.label(text="2. Character Importer", icon='ARMATURE_DATA')
@@ -236,30 +225,7 @@ class HYTOPIA_PT_main_panel(Panel):
         box.label(text="• Check console for detailed logs", icon='INFO')
 
 
-class HytopiaImportProperties(bpy.types.PropertyGroup):
-    """Properties for Hytopia import settings"""
-    
-    quick_texture_path: StringProperty(
-        name="Texture Path",
-        description="Quick setting for texture directory",
-        default="",
-        subtype='DIR_PATH'
-    )
-    
-    quick_model_path: StringProperty(
-        name="Model Path",
-        description="Quick setting for model directory", 
-        default="",
-        subtype='DIR_PATH'
-    )
-    
-    quick_bounds_size: bpy.props.FloatProperty(
-        name="Bounds Size",
-        description="Half-size of import bounds (creates -size to +size box)",
-        default=25.0,
-        min=1.0,
-        max=500.0
-    )
+
 
 
 # Registration functions
@@ -267,7 +233,6 @@ classes = [
     HYTOPIA_OT_import_world,
     HYTOPIA_OT_clear_scene, 
     HYTOPIA_PT_main_panel,
-    HytopiaImportProperties,
 ]
 
 
@@ -275,16 +240,9 @@ def register():
     """Register all UI classes and properties."""
     for cls in classes:
         bpy.utils.register_class(cls)
-    
-    # Register properties
-    bpy.types.Scene.hytopia_import_props = bpy.props.PointerProperty(type=HytopiaImportProperties)
 
 
 def unregister():
     """Unregister all UI classes and properties."""
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
-    
-    # Unregister properties
-    if hasattr(bpy.types.Scene, 'hytopia_import_props'):
-        del bpy.types.Scene.hytopia_import_props 
+        bpy.utils.unregister_class(cls) 

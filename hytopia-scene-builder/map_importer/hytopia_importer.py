@@ -28,6 +28,7 @@ class HytopiaWorldImporter:
         self.material_manager = HytopiaMaterialManager()
         self.mesh_generator = HytopiaBlockMesh()
         self.imported_objects = []  # Track imported objects for cleanup
+        self.world_map_collection = None  # Collection for all imported map content
         
     def import_world(self,
                     map_file_path: str,
@@ -81,22 +82,42 @@ class HytopiaWorldImporter:
             block_registry = get_block_registry(map_data)
             print(f"Loaded {len(block_registry)} block types")
             
+            # Calculate centering offset to move imported content to origin
+            # Hytopia coordinates: (X, Y, Z) where Y is height
+            # Blender coordinates: (X, Z, Y) where Z is height
+            # We want to center the imported area at (0,0,0) in Blender
+            center_offset = (
+                -(min_bounds[0] + max_bounds[0]) / 2,  # Center X: negate for Blender X
+                -(min_bounds[2] + max_bounds[2]) / 2,  # Center Z: negate for Blender Y (Hytopia Z)
+                0  # Keep Y (height) as is
+            )
+            print(f"Centering offset: {center_offset} (will move imported content to origin)")
+            
+            # Create or get the world map collection
+            self._setup_world_map_collection()
+            
             # Import blocks if requested
             if import_blocks:
-                success = self._import_blocks(map_data, block_registry, min_bounds, max_bounds, cull_faces)
+                success = self._import_blocks(map_data, block_registry, min_bounds, max_bounds, cull_faces, center_offset)
                 if not success:
                     print("Block import failed")
                     return False
             
             # Import entities if requested  
             if import_entities:
-                success = self._import_entities(map_data, model_base_path, min_bounds, max_bounds)
+                success = self._import_entities(map_data, model_base_path, min_bounds, max_bounds, center_offset)
                 if not success:
                     print("Entity import failed (continuing anyway)")
                     # Don't return False for entity failures - blocks are more important
             
             print("=== Import Complete ===")
             self._print_import_stats()
+            
+            # Hide relationship lines in viewport overlay for all imported objects
+            self._hide_relationship_lines()
+            
+            # Final cleanup: ensure ALL imported objects are in the collection
+            self._ensure_all_objects_in_collection()
             
             return True
             
@@ -140,7 +161,8 @@ class HytopiaWorldImporter:
                       block_registry: Dict[int, Dict[str, Any]],
                       min_bounds: Tuple[float, float, float],
                       max_bounds: Tuple[float, float, float],
-                      cull_faces: bool) -> bool:
+                      cull_faces: bool,
+                      center_offset: Tuple[float, float, float]) -> bool:
         """
         Import terrain blocks as mesh.
         
@@ -158,7 +180,7 @@ class HytopiaWorldImporter:
             print(f"Generating mesh for {len(filtered_blocks)} blocks...")
             
             # Use the block-by-type approach (no fallback needed)
-            self._create_blocks_by_type(filtered_blocks, block_registry, cull_faces)
+            self._create_blocks_by_type(filtered_blocks, block_registry, cull_faces, center_offset)
             
             print(f"Successfully imported {len(filtered_blocks)} blocks")
             return True
@@ -171,7 +193,8 @@ class HytopiaWorldImporter:
     
     def _create_blocks_by_type(self, filtered_blocks: Dict[Tuple[float, float, float], int],
                               block_registry: Dict[int, Dict[str, Any]],
-                              cull_faces: bool) -> bool:
+                              cull_faces: bool,
+                              center_offset: Tuple[float, float, float]) -> bool:
         """
         Create separate mesh objects for each block type with proper materials.
         
@@ -203,7 +226,8 @@ class HytopiaWorldImporter:
                 mesh = self.mesh_generator.create_block_mesh(
                     type_blocks, 
                     block_registry, 
-                    cull_faces=False  # Don't cull between different objects
+                    cull_faces=False,  # Don't cull between different objects
+                    center_offset=center_offset
                 )
                 
                 if not mesh:
@@ -212,7 +236,10 @@ class HytopiaWorldImporter:
                 # Create mesh object
                 mesh_name = f"Hytopia_{block_name}"
                 mesh_obj = bpy.data.objects.new(mesh_name, mesh)
-                bpy.context.collection.objects.link(mesh_obj)
+                
+                # Move to world map collection
+                self._move_object_to_world_map_collection(mesh_obj)
+                
                 self.imported_objects.append(mesh_obj)
                 
                 # Debug: Check if mesh has UV coordinates
@@ -226,15 +253,6 @@ class HytopiaWorldImporter:
                 # Assign material to all faces
                 for face in mesh.polygons:
                     face.material_index = 0
-                
-                # Debug: Create a simple test cube to verify material works
-                if len(coord_list) <= 4 and material.name == "hytopia_grass":  # Only for small grass test
-                    print(f"🧪 Creating test cube for material: {material.name}")
-                    bpy.ops.mesh.primitive_cube_add(location=(10, 10, 0))
-                    test_cube = bpy.context.active_object
-                    test_cube.name = f"TEST_{material.name}"
-                    test_cube.data.materials.append(material)
-                    self.imported_objects.append(test_cube)
                 
                 print(f"Created mesh for {len(coord_list)} {block_name} blocks")
             
@@ -263,7 +281,8 @@ class HytopiaWorldImporter:
     def _import_entities(self, map_data: Dict[str, Any],
                         model_base_path: str,
                         min_bounds: Tuple[float, float, float],
-                        max_bounds: Tuple[float, float, float]) -> bool:
+                        max_bounds: Tuple[float, float, float],
+                        center_offset: Tuple[float, float, float]) -> bool:
         """
         Import entities/models with clean, accurate positioning.
         
@@ -283,7 +302,7 @@ class HytopiaWorldImporter:
             imported_count = 0
             for coords, entity_data in filtered_entities.items():
                 try:
-                    if self._import_single_entity(entity_data, coords, model_base_path):
+                    if self._import_single_entity(entity_data, coords, model_base_path, center_offset):
                         imported_count += 1
                 except Exception as e:
                     print(f"Warning: Failed to import entity at {coords}: {e}")
@@ -298,7 +317,8 @@ class HytopiaWorldImporter:
     
     def _import_single_entity(self, entity_data: Dict[str, Any], 
                              coords: Tuple[float, float, float],
-                             model_base_path: str) -> bool:
+                             model_base_path: str,
+                             center_offset: Tuple[float, float, float]) -> bool:
         """
         Import a single entity with clean order of operations.
         
@@ -334,6 +354,12 @@ class HytopiaWorldImporter:
             if not imported_objects:
                 print(f"Warning: No objects imported from {model_path}")
                 return False
+            
+            # Rename imported objects with actual GLTF filename
+            self._rename_imported_objects(imported_objects, model_uri)
+            
+            # Set specular to 0 for all GLTF materials
+            self._set_gltf_materials_specular_to_zero(imported_objects)
             
             # Filter to mesh objects and clean up non-mesh objects
             mesh_objects = []
@@ -375,8 +401,10 @@ class HytopiaWorldImporter:
                 if modifier.type == 'ARMATURE':
                     model_object.modifiers.remove(modifier)
             
-            # Set name and reset all transforms to origin
-            model_object.name = f"entity_{entity_name}"
+            # Set name using the clean filename from GLTF
+            filename = os.path.splitext(os.path.basename(model_uri))[0]
+            clean_filename = filename.replace('-', '_').replace(' ', '_')
+            model_object.name = f"entity_{clean_filename}"
             model_object.location = (0, 0, 0)
             model_object.rotation_euler = (0, 0, 0)  # Reset GLTF's built-in rotation to (0,0,0)
             model_object.scale = (1, 1, 1)
@@ -444,16 +472,18 @@ class HytopiaWorldImporter:
             
             # Coordinate transformation: Hytopia (X,Y,Z) -> Blender (-X, Z, Y)
             # Apply bounding box offset to X,Y only, then add position offsets
+            # Apply center offset to move imported content to origin
             final_position = (
-                -coords[0] + 1,                              # Hytopia X -> Blender X (flipped) + offset
-                coords[2] - 1,                               # Hytopia Z -> Blender Y - offset
-                current_location[2] + coords[1]              # Hytopia Y -> Blender Z (with height centering offset)
+                -coords[0] + 1 + center_offset[0],          # Hytopia X -> Blender X (flipped) + center offset
+                coords[2] - 1 + center_offset[1],           # Hytopia Z -> Blender Y + center offset
+                current_location[2] + coords[1] + center_offset[2]  # Hytopia Y -> Blender Z + center offset
             )
             model_object.location = final_position
             print(f"   Step 6: Positioned at: {final_position}")
             print(f"   Height centering offset applied to Z: {current_location[2]:.3f}")
             
-            # Track object
+            # Move to world map collection and track object
+            self._move_object_to_world_map_collection(model_object)
             bpy.context.view_layer.update()
             self.imported_objects.append(model_object)
             
@@ -569,7 +599,245 @@ class HytopiaWorldImporter:
         # Clear materials cache
         self.material_manager.clear_cache()
         
+        # Clear world map collection if it exists and is empty
+        if self.world_map_collection and len(self.world_map_collection.objects) == 0:
+            try:
+                bpy.data.collections.remove(self.world_map_collection)
+                self.world_map_collection = None
+                print("Removed empty World Map collection")
+            except:
+                pass
+        
         print("Cleared imported objects")
+    
+    def _hide_relationship_lines(self):
+        """
+        Hide relationship lines in viewport overlay for all imported objects.
+        This makes the viewport cleaner by hiding parent-child relationship lines.
+        """
+        try:
+            for obj in self.imported_objects:
+                if hasattr(obj, 'show_in_front'):
+                    obj.show_in_front = False
+                if hasattr(obj, 'show_axis'):
+                    obj.show_axis = False
+                if hasattr(obj, 'show_name'):
+                    obj.show_name = False
+                if hasattr(obj, 'show_bounds'):
+                    obj.show_bounds = False
+                    
+            # Also hide relationship lines in viewport overlay settings
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            # Hide relationship lines
+                            if hasattr(space, 'overlay'):
+                                if hasattr(space.overlay, 'show_relationship_lines'):
+                                    space.overlay.show_relationship_lines = False
+                                if hasattr(space.overlay, 'show_extra_indices'):
+                                    space.overlay.show_extra_indices = False
+                                if hasattr(space.overlay, 'show_face_center'):
+                                    space.overlay.show_face_center = False
+                                    
+            print("✓ Hidden relationship lines in viewport overlay")
+            
+        except Exception as e:
+            print(f"Warning: Could not hide relationship lines: {e}")
+    
+    def _rename_imported_objects(self, imported_objects: list, model_uri: str):
+        """
+        Rename imported GLTF objects with the actual filename instead of generic names.
+        
+        Args:
+            imported_objects: List of imported Blender objects
+            model_uri: The original GLTF file path/name
+        """
+        try:
+            # Extract filename without extension and path
+            filename = os.path.splitext(os.path.basename(model_uri))[0]
+            
+            # Clean filename for Blender object naming
+            clean_filename = filename.replace('-', '_').replace(' ', '_')
+            
+            # Rename all imported objects
+            for i, obj in enumerate(imported_objects):
+                if obj and obj.name in bpy.data.objects:
+                    if i == 0:
+                        # First object gets the clean filename
+                        obj.name = clean_filename
+                    else:
+                        # Additional objects get numbered suffix
+                        obj.name = f"{clean_filename}_{i+1:03d}"
+                    
+                    print(f"   Renamed: {obj.name}")
+                    
+        except Exception as e:
+            print(f"Warning: Could not rename imported objects: {e}")
+    
+    def _set_gltf_materials_specular_to_zero(self, imported_objects: list):
+        """
+        Set specular IOR to 0 for all materials in imported GLTF objects.
+        
+        Args:
+            imported_objects: List of imported Blender objects
+        """
+        try:
+            for obj in imported_objects:
+                if obj and hasattr(obj, 'data') and hasattr(obj.data, 'materials'):
+                    for material in obj.data.materials:
+                        if material and material.use_nodes:
+                            for node in material.node_tree.nodes:
+                                if node.type == 'BSDF_PRINCIPLED':
+                                    # Set Specular IOR Level to 0
+                                    if 'Specular IOR Level' in node.inputs:
+                                        node.inputs['Specular IOR Level'].default_value = 0.0
+                                    # Also set Specular to 0 for older Blender versions
+                                    if 'Specular' in node.inputs:
+                                        node.inputs['Specular'].default_value = 0.0
+                                    print(f"   Set specular to 0 for material: {material.name}")
+                                    break
+                                    
+        except Exception as e:
+            print(f"Warning: Could not set GLTF materials specular to 0: {e}")
+    
+    def _setup_world_map_collection(self):
+        """
+        Create or get the world map collection for organizing imported content.
+        """
+        try:
+            collection_name = "World Map"
+            
+            # Check if collection already exists
+            if collection_name in bpy.data.collections:
+                self.world_map_collection = bpy.data.collections[collection_name]
+                print(f"Using existing collection: {collection_name}")
+            else:
+                # Create new collection
+                self.world_map_collection = bpy.data.collections.new(collection_name)
+                # Link to scene
+                bpy.context.scene.collection.children.link(self.world_map_collection)
+                print(f"Created new collection: {collection_name}")
+                
+        except Exception as e:
+            print(f"Warning: Could not setup world map collection: {e}")
+            self.world_map_collection = None
+    
+    def _move_object_to_world_map_collection(self, obj):
+        """
+        Move an object to the world map collection while preserving visual hierarchy.
+        Only moves the top-level parent - children follow automatically.
+        
+        Args:
+            obj: Blender object to move
+        """
+        try:
+            if self.world_map_collection and obj:
+                # Find the top-level parent of this object
+                top_parent = self._find_top_level_parent(obj)
+                
+                # Only move the top-level parent to the collection
+                # Children will automatically be included through the hierarchy
+                if top_parent and top_parent.name in bpy.data.objects:
+                    # IMPORTANT: Remove from ALL collections first
+                    collections_to_remove = list(top_parent.users_collection)
+                    for collection in collections_to_remove:
+                        collection.objects.unlink(top_parent)
+                    
+                    # Add ONLY to world map collection
+                    self.world_map_collection.objects.link(top_parent)
+                    
+                    print(f"   Moved top-level parent '{top_parent.name}' to World Map collection")
+                
+        except Exception as e:
+            print(f"Warning: Could not move object to world map collection: {e}")
+    
+    def _find_top_level_parent(self, obj):
+        """
+        Find the top-level parent of an object (the root of its hierarchy).
+        
+        Args:
+            obj: Blender object
+            
+        Returns:
+            Top-level parent object
+        """
+        current = obj
+        while current.parent:
+            current = current.parent
+        return current
+    
+    def _get_all_children(self, obj):
+        """
+        Recursively get all children of an object.
+        
+        Args:
+            obj: Parent object
+            
+        Returns:
+            List of all child objects
+        """
+        children = []
+        for child in obj.children:
+            children.append(child)
+            children.extend(self._get_all_children(child))
+        return children
+    
+    def _ensure_all_objects_in_collection(self):
+        """
+        Final cleanup: ensure ALL imported objects and their hierarchies are in the World Map collection.
+        This catches any objects that might have been missed during the import process.
+        """
+        try:
+            if not self.world_map_collection:
+                return
+                
+            print("Ensuring all imported objects are in World Map collection...")
+            
+            # Get all top-level parents that should be in the collection
+            top_level_parents = set()
+            
+            # Add all imported objects - find their top-level parents
+            for obj in self.imported_objects:
+                if obj and obj.name in bpy.data.objects:
+                    top_parent = self._find_top_level_parent(obj)
+                    top_level_parents.add(top_parent)
+            
+            # Also check for any objects with "hytopia" or "entity_" in their name
+            # that might not be in our imported_objects list
+            for obj in bpy.data.objects:
+                if (obj.name.lower().startswith('hytopia_') or 
+                    obj.name.lower().startswith('entity_') or
+                    obj.name.lower().startswith('bone_cluster') or
+                    obj.name.lower().startswith('test_')):
+                    top_parent = self._find_top_level_parent(obj)
+                    top_level_parents.add(top_parent)
+            
+            # Move only the top-level parents to the collection
+            moved_count = 0
+            for top_parent in top_level_parents:
+                if top_parent and top_parent.name in bpy.data.objects:
+                    # Check if object is already ONLY in the world map collection
+                    if (len(top_parent.users_collection) != 1 or 
+                        self.world_map_collection not in top_parent.users_collection):
+                        
+                        # Remove from ALL collections first
+                        collections_to_remove = list(top_parent.users_collection)
+                        for collection in collections_to_remove:
+                            collection.objects.unlink(top_parent)
+                        
+                        # Add ONLY to world map collection
+                        self.world_map_collection.objects.link(top_parent)
+                        moved_count += 1
+                        print(f"   Moved top-level parent '{top_parent.name}' to World Map collection")
+            
+            if moved_count > 0:
+                print(f"✓ Moved {moved_count} additional objects to World Map collection")
+            else:
+                print("✓ All objects already in World Map collection")
+                
+        except Exception as e:
+            print(f"Warning: Could not ensure all objects in collection: {e}")
     
     def _print_import_stats(self):
         """Print statistics about the import process."""

@@ -104,6 +104,9 @@ class HytopiaMaterialManager:
         # Connect BSDF to output
         links.new(bsdf_node.outputs['BSDF'], output_node.inputs['Surface'])
         
+        # Set specular IOR to 0 for all materials
+        self._set_specular_ior_to_zero(bsdf_node)
+        
         # Handle texture
         texture_uri = block_type.get('textureUri', '')
         texture_loaded = False
@@ -117,6 +120,23 @@ class HytopiaMaterialManager:
             self._setup_color_material(material, bsdf_node, block_type)
         
         return material
+    
+    def _set_specular_ior_to_zero(self, bsdf_node: bpy.types.ShaderNode):
+        """
+        Set the Specular IOR Level to 0 for the given Principled BSDF node.
+        
+        Args:
+            bsdf_node: The Principled BSDF node to modify
+        """
+        try:
+            # Set Specular IOR Level to 0
+            if 'Specular IOR Level' in bsdf_node.inputs:
+                bsdf_node.inputs['Specular IOR Level'].default_value = 0.0
+            # Also set Specular to 0 for older Blender versions
+            if 'Specular' in bsdf_node.inputs:
+                bsdf_node.inputs['Specular'].default_value = 0.0
+        except Exception as e:
+            print(f"Warning: Could not set specular IOR to 0: {e}")
     
     def _create_multi_texture_material(self, block_type: Dict[str, Any], material_name: str) -> bpy.types.Material:
         """
@@ -153,6 +173,9 @@ class HytopiaMaterialManager:
         
         # Connect BSDF to output
         links.new(bsdf_node.outputs['BSDF'], output_node.inputs['Surface'])
+        
+        # Set specular IOR to 0 for all materials
+        self._set_specular_ior_to_zero(bsdf_node)
         
         # Load face textures and create the multi-texture node setup
         texture_loaded = self._setup_multi_texture_nodes(material, bsdf_node, block_type)
