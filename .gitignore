@@ -70,4 +70,7 @@ venv.bak/
 
 # Backup files
 *.bak
-*.backup 
+*.backup
+
+# Exclude world-editor-main folder entirely
+hytopia-world-to-blender/world-editor-main/ 
