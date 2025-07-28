@@ -1,0 +1,9 @@
+---
+alwaysApply: false
+---
+
+We are creating blender add-on to import maps, characters, and assets from Hytopia into blender for animations and renders. 
+
+- NEVER zip packages without being asked
+- NEVER run your own tests without being asked
+- ALWAYS write clean, elegant code
