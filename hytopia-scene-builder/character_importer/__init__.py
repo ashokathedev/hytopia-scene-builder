@@ -419,6 +419,33 @@ class HytopiaProperties(PropertyGroup):
         default=True
     )
     
+    # Skin texture method selection
+    skin_method: EnumProperty(
+        name="Skin Method",
+        description="Choose how to apply skin texture to the character",
+        items=[
+            ('DEFAULT', 'Default Skin', 'Use the default skin baked into the GLTF model'),
+            ('SELECT', 'Select Skin Options', 'Choose from available Hytopia skin options'),
+            ('CUSTOM', 'Upload Custom Skin', 'Use your own custom skin texture file')
+        ],
+        default='DEFAULT'
+    )
+    
+    # Custom skin texture file path
+    custom_skin_path: StringProperty(
+        name="Custom Skin File",
+        description="Path to your custom skin texture file (PNG format recommended)",
+        default="",
+        subtype='FILE_PATH'
+    )
+    
+    # Hair type for custom skin method
+    custom_hair_type: StringProperty(
+        name="Hair Type",
+        description="Selected hair type for custom skin method",
+        default="1"
+    )
+    
     # Character customization options - using simple string properties
     skin_type: StringProperty(
         name="Skin Type",
@@ -502,10 +529,27 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             # Rename imported objects to be unique for this character
             self.rename_imported_objects(imported_objects, import_id)
             
-            # Apply layered textures with unique instance ID
-            self.apply_layered_textures(props, cache_dir, import_id, imported_objects)
-            
-            self.report({'INFO'}, f"Hytopia player model imported successfully! (ID: {import_id})")
+            # Apply textures based on selected method
+            if props.skin_method == 'DEFAULT':
+                # Default method - just set specular values, don't change textures
+                self.apply_default_skin(imported_objects, import_id)
+                # Manage hair visibility - show only hair-0001
+                self.manage_hair_visibility(imported_objects, props, import_id)
+                self.report({'INFO'}, f"Hytopia player imported with default skin! (ID: {import_id})")
+                
+            elif props.skin_method == 'SELECT':
+                # Select method - use current layered texture system
+                self.apply_layered_textures(props, cache_dir, import_id, imported_objects)
+                # Manage hair visibility - show only selected hair style
+                self.manage_hair_visibility(imported_objects, props, import_id)
+                self.report({'INFO'}, f"Hytopia player imported with selected textures! (ID: {import_id})")
+                
+            elif props.skin_method == 'CUSTOM':
+                # Custom method - use provided custom skin file
+                self.apply_custom_skin(props, cache_dir, import_id, imported_objects)
+                # Manage hair visibility - show only selected custom hair type
+                self.manage_hair_visibility(imported_objects, props, import_id)
+                self.report({'INFO'}, f"Hytopia player imported with custom skin! (ID: {import_id})")
             
             return {'FINISHED'}
             
@@ -545,6 +589,274 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                     
         except Exception as e:
             print(f"Error renaming objects: {e}")
+    
+    def apply_default_skin(self, imported_objects, import_id):
+        """Apply default skin method - just set specular values to 0, preserve existing textures"""
+        try:
+            # Filter imported objects to get only mesh objects
+            target_objects = [obj for obj in imported_objects if obj.type == 'MESH']
+            
+            print(f"Applying default skin method to {len(target_objects)} mesh objects...")
+            
+            for mesh_obj in target_objects:
+                print(f"  Processing mesh: {mesh_obj.name}")
+                
+                # Process all materials on this mesh
+                if mesh_obj.data and mesh_obj.data.materials:
+                    for mat_slot in mesh_obj.data.materials:
+                        if mat_slot and mat_slot.use_nodes:
+                            # Find Principled BSDF node
+                            for node in mat_slot.node_tree.nodes:
+                                if node.type == 'BSDF_PRINCIPLED':
+                                    # Set specular values to 0
+                                    try:
+                                        if 'Specular IOR Level' in node.inputs:
+                                            node.inputs['Specular IOR Level'].default_value = 0.0
+                                        if 'Specular' in node.inputs:
+                                            node.inputs['Specular'].default_value = 0.0
+                                        print(f"    Set specular values to 0 for material: {mat_slot.name}")
+                                    except Exception as e:
+                                        print(f"    Warning: Could not set specular values for {mat_slot.name}: {e}")
+                                    break
+                else:
+                    print(f"    No materials found on {mesh_obj.name}")
+            
+            print(f"Default skin method applied to {len(target_objects)} mesh objects")
+            
+        except Exception as e:
+            print(f"Failed to apply default skin method: {e}")
+    
+    def apply_custom_skin(self, props, cache_dir, import_id, imported_objects):
+        """Apply custom skin method - load and apply user-provided texture file"""
+        try:
+            # Validate custom skin path
+            if not props.custom_skin_path:
+                raise Exception("No custom skin file path provided")
+            
+            if not os.path.exists(props.custom_skin_path):
+                raise Exception(f"Custom skin file not found: {props.custom_skin_path}")
+            
+            # Check file extension
+            valid_extensions = ['.png', '.jpg', '.jpeg']
+            file_ext = os.path.splitext(props.custom_skin_path)[1].lower()
+            if file_ext not in valid_extensions:
+                raise Exception(f"Unsupported file format: {file_ext}. Use PNG, JPG, or JPEG")
+            
+            # Filter imported objects to get only mesh objects
+            target_objects = [obj for obj in imported_objects if obj.type == 'MESH']
+            
+            print(f"Applying custom skin from: {props.custom_skin_path}")
+            print(f"Processing {len(target_objects)} mesh objects...")
+            
+            # Load the custom skin image once with unique name
+            custom_image_name = f"Custom_Skin_{import_id}"
+            
+            # Check if image already exists in Blender
+            existing_image = bpy.data.images.get(custom_image_name)
+            if existing_image:
+                print(f"Using existing custom image: {custom_image_name}")
+                custom_image = existing_image
+            else:
+                # Load the custom image
+                try:
+                    abs_custom_path = os.path.abspath(props.custom_skin_path)
+                    custom_image = bpy.data.images.load(abs_custom_path)
+                    custom_image.name = custom_image_name
+                    print(f"Loaded custom image: {custom_image_name}")
+                except Exception as e:
+                    raise Exception(f"Failed to load custom skin image: {e}")
+            
+            # Apply the custom image to all mesh objects
+            for mesh_obj in target_objects:
+                print(f"  Processing mesh: {mesh_obj.name}")
+                self.apply_custom_to_mesh(mesh_obj, custom_image, import_id)
+            
+            print(f"Custom skin method applied to {len(target_objects)} mesh objects")
+            
+        except Exception as e:
+            print(f"Failed to apply custom skin method: {e}")
+            raise  # Re-raise to show error in UI
+    
+    def apply_custom_to_mesh(self, mesh_obj, custom_image, import_id):
+        """Apply a custom skin image to a mesh object with unique material"""
+        try:
+            print(f"  Processing custom skin for mesh: {mesh_obj.name}")
+            
+            # Ensure we're in object mode
+            bpy.context.view_layer.objects.active = mesh_obj
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            # Create unique material for this instance
+            material_name = f"Custom_Skin_Material_{import_id}_{mesh_obj.name}_{len(bpy.data.materials):04d}"
+            material = bpy.data.materials.new(name=material_name)
+            print(f"    Created material: {material_name}")
+            
+            # Assign material to mesh object
+            if mesh_obj.data.materials:
+                mesh_obj.data.materials[0] = material
+            else:
+                mesh_obj.data.materials.append(material)
+            
+            # Ensure material uses nodes
+            if not material.use_nodes:
+                material.use_nodes = True
+            
+            # Clear existing texture nodes
+            nodes_to_remove = []
+            for node in material.node_tree.nodes:
+                if node.type == 'TEX_IMAGE':
+                    nodes_to_remove.append(node)
+            for node in nodes_to_remove:
+                material.node_tree.nodes.remove(node)
+            
+            # Find the Principled BSDF node
+            principled_node = None
+            for node in material.node_tree.nodes:
+                if node.type == 'BSDF_PRINCIPLED':
+                    principled_node = node
+                    break
+            
+            if not principled_node:
+                print(f"    No Principled BSDF found for {mesh_obj.name}")
+                return
+            
+            # Set specular values to 0
+            try:
+                if 'Specular IOR Level' in principled_node.inputs:
+                    principled_node.inputs['Specular IOR Level'].default_value = 0.0
+                if 'Specular' in principled_node.inputs:
+                    principled_node.inputs['Specular'].default_value = 0.0
+                print(f"    Set specular values to 0 for {mesh_obj.name}")
+            except Exception as e:
+                print(f"    Warning: Could not set specular values for {mesh_obj.name}: {e}")
+            
+            # Create and configure texture node
+            if custom_image:
+                print(f"    Applying custom image: {custom_image.name}")
+                
+                # Create image texture node
+                texture_node = material.node_tree.nodes.new(type='ShaderNodeTexImage')
+                texture_node.location = (-600, 300)
+                texture_node.name = f"Custom_Skin_{import_id}"
+                
+                # Assign the custom image
+                texture_node.image = custom_image
+                
+                # Set interpolation to Closest for pixel-perfect textures
+                texture_node.interpolation = 'Closest'
+                
+                # Connect to Principled BSDF
+                material.node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
+                material.node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
+                
+                print(f"    Successfully applied custom skin to {mesh_obj.name}")
+            else:
+                print(f"    No custom image provided for {mesh_obj.name}")
+                
+        except Exception as e:
+            print(f"Failed to apply custom skin to {mesh_obj.name}: {str(e)}")
+    
+    def manage_hair_visibility(self, imported_objects, props, import_id):
+        """Manage hair object visibility based on selected skin method and hair style"""
+        try:
+            print(f"Managing hair visibility for character {import_id}...")
+            
+            # Find all hair objects
+            hair_objects = []
+            for obj in imported_objects:
+                if obj.name.startswith("hair-") and len(obj.name) >= 9:  # hair-XXXX format
+                    try:
+                        # Extract hair number from name like "hair-0001" -> "0001"
+                        hair_number_str = obj.name[5:9]  # Get characters 5-8 (0001)
+                        hair_number = int(hair_number_str)
+                        hair_objects.append((obj, hair_number, hair_number_str))
+                        print(f"  Found hair object: {obj.name} (style {hair_number})")
+                    except (ValueError, IndexError):
+                        print(f"  Skipping malformed hair object name: {obj.name}")
+                        continue
+            
+            if not hair_objects:
+                print("  No hair objects found")
+                return
+            
+            # Determine which hair style to show
+            target_hair_style = None
+            
+            if props.skin_method == 'DEFAULT':
+                target_hair_style = 1  # Always show hair-0001 for default
+                print(f"  Default method: showing hair style {target_hair_style}")
+                
+            elif props.skin_method == 'SELECT':
+                try:
+                    target_hair_style = int(props.hair_style)
+                    print(f"  Select method: showing hair style {target_hair_style}")
+                except ValueError:
+                    target_hair_style = 1  # Fallback to style 1
+                    print(f"  Select method: invalid hair style, fallback to {target_hair_style}")
+                    
+            elif props.skin_method == 'CUSTOM':
+                try:
+                    target_hair_style = int(props.custom_hair_type)
+                    print(f"  Custom method: showing hair style {target_hair_style}")
+                except ValueError:
+                    target_hair_style = 1  # Fallback to style 1
+                    print(f"  Custom method: invalid hair type, fallback to {target_hair_style}")
+            
+            # Hide/show hair objects based on target style
+            for hair_obj, hair_number, hair_number_str in hair_objects:
+                if hair_number == target_hair_style:
+                    # Show this hair style
+                    hair_obj.hide_viewport = False
+                    hair_obj.hide_render = False
+                    print(f"    Showing: {hair_obj.name}")
+                    
+                    # Also show any child objects in the hierarchy
+                    self.show_hair_hierarchy(hair_obj)
+                else:
+                    # Hide this hair style
+                    hair_obj.hide_viewport = True
+                    hair_obj.hide_render = True
+                    print(f"    Hiding: {hair_obj.name}")
+                    
+                    # Also hide any child objects in the hierarchy
+                    self.hide_hair_hierarchy(hair_obj)
+            
+            print(f"  Hair visibility management completed for style {target_hair_style}")
+            
+        except Exception as e:
+            print(f"Failed to manage hair visibility: {e}")
+    
+    def show_hair_hierarchy(self, hair_obj):
+        """Show hair object and all its children"""
+        try:
+            # Show the object itself
+            hair_obj.hide_viewport = False
+            hair_obj.hide_render = False
+            
+            # Show all children recursively
+            for child in hair_obj.children:
+                child.hide_viewport = False
+                child.hide_render = False
+                self.show_hair_hierarchy(child)  # Recursive for nested children
+                
+        except Exception as e:
+            print(f"Error showing hair hierarchy for {hair_obj.name}: {e}")
+    
+    def hide_hair_hierarchy(self, hair_obj):
+        """Hide hair object and all its children"""
+        try:
+            # Hide the object itself
+            hair_obj.hide_viewport = True
+            hair_obj.hide_render = True
+            
+            # Hide all children recursively
+            for child in hair_obj.children:
+                child.hide_viewport = True
+                child.hide_render = True
+                self.hide_hair_hierarchy(child)  # Recursive for nested children
+                
+        except Exception as e:
+            print(f"Error hiding hair hierarchy for {hair_obj.name}: {e}")
     
     def apply_layered_textures(self, props, cache_dir, import_id, imported_objects):
         """Apply layered textures to the imported model based on mesh names"""
@@ -1047,6 +1359,19 @@ class HYTOPIA_OT_SelectHairColor(Operator):
         bpy.ops.wm.call_menu(name="HYTOPIA_MT_hair_color_menu")
         return {'FINISHED'}
 
+class HYTOPIA_OT_SelectCustomHairType(Operator):
+    """Open custom hair type selection window"""
+    bl_idname = "hytopia.select_custom_hair_type"
+    bl_label = "Select Custom Hair Type"
+    bl_description = "Open hair type selection window for custom skin method"
+    
+    def execute(self, context):
+        """Open custom hair type selection window"""
+        # Auto-refresh hair style options first
+        update_texture_options()
+        bpy.ops.wm.call_menu(name="HYTOPIA_MT_custom_hair_type_menu")
+        return {'FINISHED'}
+
 # Menu classes for texture selection
 class HYTOPIA_MT_skin_menu(Menu):
     """Skin texture selection menu"""
@@ -1130,6 +1455,20 @@ class HYTOPIA_MT_hair_color_menu(Menu):
         for item in hair_color_options:
             layout.operator("hytopia.set_hair_color", text=item[1]).hair_color = item[0]
 
+class HYTOPIA_MT_custom_hair_type_menu(Menu):
+    """Custom hair type selection menu"""
+    bl_idname = "HYTOPIA_MT_custom_hair_type_menu"
+    bl_label = "Select Custom Hair Type"
+    
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.hytopia_props
+        
+        # Get available hair type options
+        hair_type_options = texture_options_cache.get('hair_styles', [])
+        for item in hair_type_options:
+            layout.operator("hytopia.set_custom_hair_type", text=item[1]).custom_hair_type = item[0]
+
 # Setter operators for menu selections
 class HYTOPIA_OT_SetSkin(Operator):
     """Set skin texture type"""
@@ -1173,6 +1512,18 @@ class HYTOPIA_OT_SetHairStyle(Operator):
     
     def execute(self, context):
         context.scene.hytopia_props.hair_style = self.hair_style
+        
+        # Update hair visibility in real-time if SELECT method is active
+        props = context.scene.hytopia_props
+        if props.skin_method == 'SELECT':
+            # Find all Hytopia character objects in the scene
+            hytopia_objects = [obj for obj in bpy.context.scene.objects 
+                             if 'hytopia_character_' in obj.name]
+            if hytopia_objects:
+                # Create a dummy import operator to access the hair visibility method
+                import_op = HYTOPIA_OT_ImportPlayer()
+                import_op.manage_hair_visibility(hytopia_objects, props, "live_update")
+        
         return {'FINISHED'}
 
 class HYTOPIA_OT_SetHairColor(Operator):
@@ -1184,6 +1535,105 @@ class HYTOPIA_OT_SetHairColor(Operator):
     
     def execute(self, context):
         context.scene.hytopia_props.hair_color = self.hair_color
+        return {'FINISHED'}
+
+class HYTOPIA_OT_SetCustomHairType(Operator):
+    """Set custom hair type"""
+    bl_idname = "hytopia.set_custom_hair_type"
+    bl_label = "Set Custom Hair Type"
+    
+    custom_hair_type: StringProperty()
+    
+    def execute(self, context):
+        context.scene.hytopia_props.custom_hair_type = self.custom_hair_type
+        
+        # Update hair visibility in real-time if CUSTOM method is active
+        props = context.scene.hytopia_props
+        if props.skin_method == 'CUSTOM':
+            # Find all Hytopia character objects in the scene
+            hytopia_objects = [obj for obj in bpy.context.scene.objects 
+                             if 'hytopia_character_' in obj.name]
+            if hytopia_objects:
+                # Create a dummy import operator to access the hair visibility method
+                import_op = HYTOPIA_OT_ImportPlayer()
+                import_op.manage_hair_visibility(hytopia_objects, props, "live_update")
+        
+        return {'FINISHED'}
+
+class HYTOPIA_OT_UseDefaultSkin(Operator):
+    """Use default skin from GLTF model"""
+    bl_idname = "hytopia.use_default_skin"
+    bl_label = "Default Skin"
+    bl_description = "Use the default skin texture baked into the player model"
+    
+    def execute(self, context):
+        context.scene.hytopia_props.skin_method = 'DEFAULT'
+        self.report({'INFO'}, "Default skin method selected")
+        return {'FINISHED'}
+
+class HYTOPIA_OT_UseSelectSkin(Operator):
+    """Use skin selection from Hytopia options"""
+    bl_idname = "hytopia.use_select_skin"
+    bl_label = "Select Skin Options"
+    bl_description = "Choose from available Hytopia skin customization options"
+    
+    def execute(self, context):
+        context.scene.hytopia_props.skin_method = 'SELECT'
+        
+        # Auto-refresh texture options
+        if update_texture_options():
+            # Set defaults to first available options instead of placeholders
+            self.set_default_selections(context)
+            self.report({'INFO'}, "Skin selection method activated with refreshed options")
+        else:
+            self.report({'WARNING'}, "Skin selection method activated but failed to refresh options")
+        
+        return {'FINISHED'}
+    
+    def set_default_selections(self, context):
+        """Set default selections to first available options"""
+        props = context.scene.hytopia_props
+        
+        # Set skin to first non-default option
+        skin_options = texture_options_cache.get('skin', [])
+        for item in skin_options:
+            if item[0] != 'default':
+                props.skin_type = item[0]
+                break
+        
+        # Set clothing to first non-none option
+        clothing_options = texture_options_cache.get('clothing', [])
+        for item in clothing_options:
+            if item[0] != 'none':
+                props.clothing_type = item[0]
+                break
+        
+        # Set eyes to first non-none option
+        eyes_options = texture_options_cache.get('eyes', [])
+        for item in eyes_options:
+            if item[0] != 'none':
+                props.eye_type = item[0]
+                break
+        
+        # Set hair style to first available option
+        hair_style_options = texture_options_cache.get('hair_styles', [])
+        if hair_style_options:
+            props.hair_style = hair_style_options[0][0]
+        
+        # Set hair color to first available option
+        hair_color_options = texture_options_cache.get('hair_colors', [])
+        if hair_color_options:
+            props.hair_color = hair_color_options[0][0]
+
+class HYTOPIA_OT_UseCustomSkin(Operator):
+    """Use custom skin texture file"""
+    bl_idname = "hytopia.use_custom_skin"
+    bl_label = "Upload Custom Skin"
+    bl_description = "Use your own custom skin texture file"
+    
+    def execute(self, context):
+        context.scene.hytopia_props.skin_method = 'CUSTOM'
+        self.report({'INFO'}, "Custom skin method selected - specify your texture file path")
         return {'FINISHED'}
 
 class HYTOPIA_PT_MainPanel(Panel):
@@ -1213,33 +1663,91 @@ class HYTOPIA_PT_MainPanel(Panel):
         
         layout.separator()
         
-        # Character customization section
+        # Skin method selection - 3 buttons side by side
         box = layout.box()
-        box.label(text="Character Customization:", icon='USER')
+        box.label(text="Choose Skin Method:", icon='MATERIAL')
         
-        # Skin selection
-        row = box.row()
-        row.label(text="Skin Type:", icon='MATERIAL')
-        row.operator("hytopia.select_skin", text=props.skin_type.title())
+        row = box.row(align=True)
+        row.scale_y = 1.2
         
-        # Clothing selection
-        row = box.row()
-        row.label(text="Clothing:", icon='OUTLINER_OB_MESH')
-        row.operator("hytopia.select_clothing", text=props.clothing_type.title())
+        # Method 1: Default Skin
+        sub1 = row.row()
+        sub1.alert = (props.skin_method == 'DEFAULT')
+        sub1.operator("hytopia.use_default_skin", text="Default")
         
-        # Eye selection
-        row = box.row()
-        row.label(text="Eyes:", icon='HIDE_OFF')
-        row.operator("hytopia.select_eyes", text=props.eye_type.title())
+        # Method 2: Select Skin Options  
+        sub2 = row.row()
+        sub2.alert = (props.skin_method == 'SELECT')
+        sub2.operator("hytopia.use_select_skin", text="Selections")
         
-        # Hair selection
-        row = box.row()
-        row.label(text="Hair Style:", icon='MOD_PARTICLES')
-        row.operator("hytopia.select_hair_style", text=f"Style {props.hair_style}")
+        # Method 3: Upload Custom Skin
+        sub3 = row.row()
+        sub3.alert = (props.skin_method == 'CUSTOM')
+        sub3.operator("hytopia.use_custom_skin", text="Custom")
         
-        row = box.row()
-        row.label(text="Hair Color:", icon='COLOR')
-        row.operator("hytopia.select_hair_color", text=props.hair_color.title())
+        layout.separator()
+        
+        # Conditional options based on selected method
+        if props.skin_method == 'DEFAULT':
+            # Default method - show info
+            box = layout.box()
+            box.label(text="Default Skin Selected", icon='INFO')
+            col = box.column()
+            col.scale_y = 0.8
+            col.label(text="The character will use the default")
+            col.label(text="skin texture from the GLTF model.")
+            
+        elif props.skin_method == 'SELECT':
+            # Select method - show character customization options
+            box = layout.box()
+            box.label(text="Character Customization:", icon='USER')
+            
+            # Skin selection
+            row = box.row()
+            row.label(text="Skin Type:", icon='MATERIAL')
+            skin_display_text = "Select Skin..." if props.skin_type == 'default' else props.skin_type.replace('-', ' ').title()
+            row.operator("hytopia.select_skin", text=skin_display_text)
+            
+            # Clothing selection
+            row = box.row()
+            row.label(text="Clothing:", icon='OUTLINER_OB_MESH')
+            clothing_display_text = "Select Clothing..." if props.clothing_type == 'none' else f"Style {props.clothing_type}"
+            row.operator("hytopia.select_clothing", text=clothing_display_text)
+            
+            # Eye selection
+            row = box.row()
+            row.label(text="Eyes:", icon='HIDE_OFF')
+            eye_display_text = "Select Eyes..." if props.eye_type == 'none' else props.eye_type.replace('-', ' ').title()
+            row.operator("hytopia.select_eyes", text=eye_display_text)
+            
+            # Hair selection
+            row = box.row()
+            row.label(text="Hair Style:", icon='MOD_PARTICLES')
+            hair_style_display_text = f"Style {props.hair_style}" if props.hair_style != '1' else "Select Hair Style..."
+            row.operator("hytopia.select_hair_style", text=hair_style_display_text)
+            
+            row = box.row()
+            row.label(text="Hair Color:", icon='COLOR')
+            hair_color_display_text = "Select Hair Color..." if props.hair_color == 'brown' else props.hair_color.replace('-', ' ').title()
+            row.operator("hytopia.select_hair_color", text=hair_color_display_text)
+            
+        elif props.skin_method == 'CUSTOM':
+            # Custom method - show file path input
+            box = layout.box()
+            box.label(text="Custom Skin Texture:", icon='TEXTURE')
+            box.prop(props, "custom_skin_path", text="File Path")
+            
+            # Hair type selection for custom method
+            row = box.row()
+            row.label(text="Hair Type:", icon='MOD_PARTICLES')
+            hair_type_display_text = f"Style {props.custom_hair_type}" if props.custom_hair_type != '1' else "Select Hair Type..."
+            row.operator("hytopia.select_custom_hair_type", text=hair_type_display_text)
+            
+            # Show file format info
+            col = box.column()
+            col.scale_y = 0.8
+            col.label(text="Supported formats: PNG, JPG, JPEG")
+            col.label(text="Recommended: 64x64 PNG with transparency")
         
         layout.separator()
         
@@ -1248,52 +1756,52 @@ class HYTOPIA_PT_MainPanel(Panel):
         
         layout.separator()
         
-        # PIL Status and Installation
-        try:
-            from PIL import Image
-            pil_available = True
-        except ImportError:
-            pil_available = False
-        
-        if not pil_available:
-            box = layout.box()
-            box.label(text="⚠️ PIL/Pillow Required", icon='ERROR')
-            col = box.column()
-            col.scale_y = 0.8
-            col.label(text="Advanced texture compositing")
-            col.label(text="requires PIL/Pillow library.")
+        # PIL Status and Installation (only show if SELECT method is chosen)
+        if props.skin_method == 'SELECT':
+            try:
+                from PIL import Image
+                pil_available = True
+            except ImportError:
+                pil_available = False
             
-            # Installation buttons
-            row = col.row()
-            row.operator("hytopia.install_pil", text="Auto Install", icon='PLUGIN')
-            row.operator("hytopia.manual_install_pil", text="Manual Instructions", icon='HELP')
-        else:
+            if not pil_available:
+                box = layout.box()
+                box.label(text="⚠️ PIL/Pillow Required", icon='ERROR')
+                col = box.column()
+                col.scale_y = 0.8
+                col.label(text="Advanced texture compositing")
+                col.label(text="requires PIL/Pillow library.")
+                
+                # Installation buttons
+                row = col.row()
+                row.operator("hytopia.install_pil", text="Auto Install", icon='PLUGIN')
+                row.operator("hytopia.manual_install_pil", text="Manual Instructions", icon='HELP')
+            else:
+                box = layout.box()
+                box.label(text="✅ PIL/Pillow Available", icon='CHECKMARK')
+                col = box.column()
+                col.scale_y = 0.8
+                col.label(text="Advanced texture compositing")
+                col.label(text="is available.")
+            
+            layout.separator()
+        
+        # Import button
+        layout.operator("hytopia.import_player", text="Import Player", icon='IMPORT')
+        
+        layout.separator()
+        
+        # Info section (only show for SELECT method)
+        if props.skin_method == 'SELECT':
             box = layout.box()
-            box.label(text="✅ PIL/Pillow Available", icon='CHECKMARK')
+            box.label(text="Texture Layering:", icon='INFO')
             col = box.column()
             col.scale_y = 0.8
-            col.label(text="Advanced texture compositing")
-            col.label(text="is available.")
-        
-        layout.separator()
-        
-        # Action buttons
-        row = layout.row(align=True)
-        row.operator("hytopia.refresh_textures", text="Refresh", icon='FILE_REFRESH')
-        row.operator("hytopia.import_player", text="Import Player", icon='IMPORT')
-        
-        layout.separator()
-        
-        # Info section
-        box = layout.box()
-        box.label(text="Texture Layering:", icon='INFO')
-        col = box.column()
-        col.scale_y = 0.8
-        col.label(text="1. Skin (base)")
-        col.label(text="2. Eye base texture")
-        col.label(text="3. Eye color (if selected)")
-        col.label(text="4. Clothing layer")
-        col.label(text="5. Hair style & color")
+            col.label(text="1. Skin (base)")
+            col.label(text="2. Eye base texture")
+            col.label(text="3. Eye color (if selected)")
+            col.label(text="4. Clothing layer")
+            col.label(text="5. Hair style & color")
 
 # Registration
 classes = [
@@ -1307,16 +1815,22 @@ classes = [
     HYTOPIA_OT_SelectEyes,
     HYTOPIA_OT_SelectHairStyle,
     HYTOPIA_OT_SelectHairColor,
+    HYTOPIA_OT_SelectCustomHairType,
     HYTOPIA_OT_SetSkin,
     HYTOPIA_OT_SetClothing,
     HYTOPIA_OT_SetEyes,
     HYTOPIA_OT_SetHairStyle,
     HYTOPIA_OT_SetHairColor,
+    HYTOPIA_OT_SetCustomHairType,
+    HYTOPIA_OT_UseDefaultSkin,
+    HYTOPIA_OT_UseSelectSkin,
+    HYTOPIA_OT_UseCustomSkin,
     HYTOPIA_MT_skin_menu,
     HYTOPIA_MT_clothing_menu,
     HYTOPIA_MT_eyes_menu,
     HYTOPIA_MT_hair_style_menu,
     HYTOPIA_MT_hair_color_menu,
+    HYTOPIA_MT_custom_hair_type_menu,
     HYTOPIA_PT_MainPanel,
 ]
 
