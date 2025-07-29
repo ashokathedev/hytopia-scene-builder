@@ -19,7 +19,7 @@ import json
 import re
 import subprocess
 import sys
-from bpy.props import StringProperty, BoolProperty, IntProperty, EnumProperty
+from bpy.props import StringProperty, BoolProperty, IntProperty, EnumProperty, FloatVectorProperty
 from bpy.types import Operator, Panel, PropertyGroup, Menu
 from bpy_extras.io_utils import ImportHelper
 
@@ -130,8 +130,8 @@ def composite_character_texture(textures, cache_dir, import_id):
         base_size = (64, 64)  # Default size
         composite = None
         
-        # Layer order: Skin → Eye Base → Eye Color → Clothing → Hair
-        layer_order = ['skin', 'eye_base', 'eye_color', 'clothing', 'hair']
+        # Layer order: Skin → Eye Base → Pupil → Clothing → Hair  
+        layer_order = ['skin', 'eye_base', 'pupil', 'clothing', 'hair']
         
         for layer_name in layer_order:
             if layer_name in textures and textures[layer_name] and os.path.exists(textures[layer_name]):
@@ -178,7 +178,7 @@ def composite_character_texture(textures, cache_dir, import_id):
 SKIN_FALLBACK_ITEMS = [('default', 'Default', 'Default skin')]
 CLOTHING_FALLBACK_ITEMS = [('none', 'None', 'No clothing')]
 EYES_FALLBACK_ITEMS = [('none', 'None', 'No eyes')]
-HAIR_STYLE_FALLBACK_ITEMS = [('1', 'Style 1', 'Hair style 1')]
+HAIR_STYLE_FALLBACK_ITEMS = [('3', 'Style 3', 'Hair style 3')]
 HAIR_COLOR_FALLBACK_ITEMS = [('brown', 'Brown', 'Brown hair')]
 
 # Global cache for texture options - initialized with fallback items
@@ -368,8 +368,8 @@ def get_hair_style_items(self, context):
                 validated_items.append((str(item[0]), str(item[1]), str(item[2])))
         
         # Ensure default item is always present
-        if validated_items and not any(item[0] == '1' for item in validated_items):
-            validated_items.insert(0, ('1', 'Style 1', 'Hair style 1'))
+        if validated_items and not any(item[0] == '3' for item in validated_items):
+            validated_items.insert(0, ('3', 'Style 3', 'Hair style 3'))
         
         return validated_items if validated_items else HAIR_STYLE_FALLBACK_ITEMS
     except Exception as e:
@@ -414,8 +414,8 @@ class HytopiaProperties(PropertyGroup):
     
     # Import animations option
     import_animations: BoolProperty(
-        name="Import Animations",
-        description="Import animations from the GLTF file",
+        name="Include Default Animations",
+        description="Include animations from the GLTF file",
         default=True
     )
     
@@ -443,7 +443,7 @@ class HytopiaProperties(PropertyGroup):
     custom_hair_type: StringProperty(
         name="Hair Type",
         description="Selected hair type for custom skin method",
-        default="1"
+        default="3"
     )
     
     # Character customization options - using simple string properties
@@ -468,13 +468,24 @@ class HytopiaProperties(PropertyGroup):
     hair_style: StringProperty(
         name="Hair Style",
         description="Selected hair style",
-        default="1"
+        default="3"
     )
     
     hair_color: StringProperty(
         name="Hair Color",
         description="Selected hair color",
         default="brown"
+    )
+    
+    # Eye color for selections method
+    eye_color: FloatVectorProperty(
+        name="Eye Color",
+        description="Color for character eyes (Selections method only)",
+        default=(0.5, 0.3, 0.1, 1.0),  # Nice brown default
+        size=4,
+        subtype='COLOR',
+        min=0.0,
+        max=1.0
     )
 
 class HYTOPIA_OT_ImportPlayer(Operator):
@@ -783,7 +794,7 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             target_hair_style = None
             
             if props.skin_method == 'DEFAULT':
-                target_hair_style = 1  # Always show hair-0001 for default
+                target_hair_style = 3  # Always show hair-0003 for default (changed from 2)
                 print(f"  Default method: showing hair style {target_hair_style}")
                 
             elif props.skin_method == 'SELECT':
@@ -791,7 +802,7 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                     target_hair_style = int(props.hair_style)
                     print(f"  Select method: showing hair style {target_hair_style}")
                 except ValueError:
-                    target_hair_style = 1  # Fallback to style 1
+                    target_hair_style = 3  # Fallback to style 3 (changed from 2)
                     print(f"  Select method: invalid hair style, fallback to {target_hair_style}")
                     
             elif props.skin_method == 'CUSTOM':
@@ -799,7 +810,7 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                     target_hair_style = int(props.custom_hair_type)
                     print(f"  Custom method: showing hair style {target_hair_style}")
                 except ValueError:
-                    target_hair_style = 1  # Fallback to style 1
+                    target_hair_style = 3  # Fallback to style 3 (changed from 2)
                     print(f"  Custom method: invalid hair type, fallback to {target_hair_style}")
             
             # Hide/show hair objects based on target style
@@ -917,19 +928,17 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             else:
                 print(f"  Skipping clothing (none selected)")
             
-            # Download eye base texture (always applied)
+            # Download eye base texture (always applied for compilation)
             print(f"  Downloading eye base texture")
             textures['eye_base'] = self.download_texture("eye-texture/eye-texture.png", cache_dir)
             
-            # Download eye color texture
-            if props.eye_type != 'none':
-                print(f"  Downloading eye color texture: {props.eye_type}")
-                textures['eye_color'] = self.download_texture(f"eye-texture/{props.eye_type}.png", cache_dir)
-            else:
-                print(f"  Skipping eye color (none selected)")
+            # Download pupil texture (always applied for compilation, even though geometry uses solid color)
+            print(f"  Downloading pupil texture for compilation")
+            textures['pupil'] = self.download_texture("eye-texture/pupil-texture.png", cache_dir)
+            
             
             # Download hair texture
-            if props.hair_style != '1' or props.hair_color != 'brown':
+            if props.hair_style != '3' or props.hair_color != 'brown':
                 print(f"  Downloading hair texture: {props.hair_style}/{props.hair_color}")
                 # Try different possible hair texture paths
                 hair_paths = [
@@ -1026,6 +1035,10 @@ class HYTOPIA_OT_ImportPlayer(Operator):
         try:
             print(f"Processing mesh object: {mesh_obj.name}")
             
+            # Check if this is a pupil object for Selections method
+            is_pupil = ("pupil-left-geo" in mesh_obj.name.lower() or 
+                       "pupil-right-geo" in mesh_obj.name.lower())
+            
             # Ensure we're in object mode
             bpy.context.view_layer.objects.active = mesh_obj
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -1070,40 +1083,46 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                 print(f"  No Principled BSDF found for {mesh_obj.name}")
                 return
             
-            # Set specular IOR to 0 for proper character rendering
+            # Set specular values to 0
             try:
-                # Set Specular IOR Level to 0
                 if 'Specular IOR Level' in principled_node.inputs:
                     principled_node.inputs['Specular IOR Level'].default_value = 0.0
-                # Also set Specular to 0 for older Blender versions
                 if 'Specular' in principled_node.inputs:
                     principled_node.inputs['Specular'].default_value = 0.0
                 print(f"  Set specular values to 0 for {mesh_obj.name}")
             except Exception as e:
-                print(f"  Warning: Could not set specular values to 0 for {mesh_obj.name}: {e}")
+                print(f"  Warning: Could not set specular values for {mesh_obj.name}: {e}")
             
-            # Create and configure texture node with the pre-loaded image
-            if composite_image:
-                print(f"  Applying composite image: {composite_image.name}")
-                
-                # Create image texture node
-                texture_node = material.node_tree.nodes.new(type='ShaderNodeTexImage')
-                texture_node.location = (-600, 300)
-                texture_node.name = f"Character_Composite_{import_id}"
-                
-                # Assign the pre-loaded composite image
-                texture_node.image = composite_image
-                
-                # Set interpolation to Closest for pixel-perfect textures
-                texture_node.interpolation = 'Closest'
-                
-                # Connect to Principled BSDF
-                material.node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
-                material.node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
-                
-                print(f"  Successfully applied composite texture to {mesh_obj.name}")
+            # Apply material based on object type
+            if is_pupil:
+                # Apply solid eye color for pupil objects
+                props = bpy.context.scene.hytopia_props
+                print(f"  Applying solid eye color to pupil: {mesh_obj.name}")
+                principled_node.inputs['Base Color'].default_value = props.eye_color
+                print(f"  Applied eye color: {props.eye_color}")
             else:
-                print(f"  No composite image provided for {mesh_obj.name}")
+                # Create and configure texture node with the pre-loaded image
+                if composite_image:
+                    print(f"  Applying composite image: {composite_image.name}")
+                    
+                    # Create image texture node
+                    texture_node = material.node_tree.nodes.new(type='ShaderNodeTexImage')
+                    texture_node.location = (-600, 300)
+                    texture_node.name = f"Character_Composite_{import_id}"
+                    
+                    # Assign the pre-loaded composite image
+                    texture_node.image = composite_image
+                    
+                    # Set interpolation to Closest for pixel-perfect textures
+                    texture_node.interpolation = 'Closest'
+                    
+                    # Connect to Principled BSDF
+                    material.node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
+                    material.node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
+                    
+                    print(f"  Successfully applied composite texture to {mesh_obj.name}")
+                else:
+                    print(f"  No composite image provided for {mesh_obj.name}")
             
         except Exception as e:
             print(f"Failed to apply texture to {mesh_obj.name}: {str(e)}")
@@ -1113,6 +1132,10 @@ class HYTOPIA_OT_ImportPlayer(Operator):
         try:
             print(f"Processing mesh object: {mesh_obj.name}")
             
+            # Check if this is a pupil object for Selections method
+            is_pupil = ("pupil-left-geo" in mesh_obj.name.lower() or 
+                       "pupil-right-geo" in mesh_obj.name.lower())
+            
             # Ensure we're in object mode
             bpy.context.view_layer.objects.active = mesh_obj
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -1157,64 +1180,81 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                 print(f"  No Principled BSDF found for {mesh_obj.name}")
                 return
             
-            # Set specular IOR to 0 for proper character rendering
+            # Set specular values to 0
             try:
-                # Set Specular IOR Level to 0
                 if 'Specular IOR Level' in principled_node.inputs:
                     principled_node.inputs['Specular IOR Level'].default_value = 0.0
-                # Also set Specular to 0 for older Blender versions
                 if 'Specular' in principled_node.inputs:
                     principled_node.inputs['Specular'].default_value = 0.0
                 print(f"  Set specular values to 0 for {mesh_obj.name}")
             except Exception as e:
-                print(f"  Warning: Could not set specular values to 0 for {mesh_obj.name}: {e}")
+                print(f"  Warning: Could not set specular values for {mesh_obj.name}: {e}")
             
-            # Create and configure texture node
-            if texture_path and os.path.exists(texture_path):
-                print(f"  Applying texture: {os.path.basename(texture_path)}")
-                
-                # Create image texture node
-                texture_node = material.node_tree.nodes.new(type='ShaderNodeTexImage')
-                texture_node.location = (-600, 300)
-                texture_node.name = f"Character_Texture_{import_id}"
-                
-                # Load texture with unique naming
-                texture_name = f"{os.path.splitext(os.path.basename(texture_path))[0]}_{import_id}"
-                texture_ext = os.path.splitext(texture_path)[1]
-                unique_texture_name = f"{texture_name}{texture_ext}"
-                
-                # Check if image already exists with unique name
-                existing_image = bpy.data.images.get(unique_texture_name)
-                if existing_image:
-                    # Use existing image
-                    texture_node.image = existing_image
-                    print(f"  Using existing image: {unique_texture_name}")
+            # Apply material based on object type
+            if is_pupil:
+                # Apply solid eye color for pupil objects (only for Selections method)
+                props = bpy.context.scene.hytopia_props
+                if props.skin_method == 'SELECT':
+                    print(f"  Applying solid eye color to pupil: {mesh_obj.name}")
+                    principled_node.inputs['Base Color'].default_value = props.eye_color
+                    print(f"  Applied eye color: {props.eye_color}")
                 else:
-                    # Load new image with unique name
-                    try:
-                        # Use absolute path to ensure proper loading
-                        abs_texture_path = os.path.abspath(texture_path)
-                        texture_image = bpy.data.images.load(abs_texture_path)
-                        texture_image.name = unique_texture_name
-                        texture_node.image = texture_image
-                        print(f"  Loaded new image: {unique_texture_name} from {abs_texture_path}")
-                    except Exception as e:
-                        print(f"  Failed to load image: {e}")
-                        return
-                
-                # Set interpolation to Closest for pixel-perfect textures
-                texture_node.interpolation = 'Closest'
-                
-                # Connect to Principled BSDF
-                material.node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
-                material.node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
-                
-                print(f"  Successfully applied texture to {mesh_obj.name}")
+                    # For other methods, apply normal texture to pupils too
+                    print(f"  Applying normal texture to pupil for non-Selections method: {mesh_obj.name}")
+                    self.apply_texture_to_principled(principled_node, texture_path, import_id)
             else:
-                print(f"  No texture to apply for {mesh_obj.name}")
+                # Apply normal texture to non-pupil objects
+                self.apply_texture_to_principled(principled_node, texture_path, import_id)
             
         except Exception as e:
             print(f"Failed to apply texture to {mesh_obj.name}: {str(e)}")
+    
+    def apply_texture_to_principled(self, principled_node, texture_path, import_id):
+        """Helper method to apply texture to principled BSDF node"""
+        # Create and configure texture node
+        if texture_path and os.path.exists(texture_path):
+            print(f"  Applying texture: {os.path.basename(texture_path)}")
+            
+            # Create image texture node
+            texture_node = principled_node.id_data.node_tree.nodes.new(type='ShaderNodeTexImage')
+            texture_node.location = (-600, 300)
+            texture_node.name = f"Character_Texture_{import_id}"
+            
+            # Load texture with unique naming
+            texture_name = f"{os.path.splitext(os.path.basename(texture_path))[0]}_{import_id}"
+            texture_ext = os.path.splitext(texture_path)[1]
+            unique_texture_name = f"{texture_name}{texture_ext}"
+            
+            # Check if image already exists with unique name
+            existing_image = bpy.data.images.get(unique_texture_name)
+            if existing_image:
+                # Use existing image
+                texture_node.image = existing_image
+                print(f"  Using existing image: {unique_texture_name}")
+            else:
+                # Load new image with unique name
+                try:
+                    # Use absolute path to ensure proper loading
+                    abs_texture_path = os.path.abspath(texture_path)
+                    texture_image = bpy.data.images.load(abs_texture_path)
+                    texture_image.name = unique_texture_name
+                    texture_node.image = texture_image
+                    print(f"  Loaded new image: {unique_texture_name} from {abs_texture_path}")
+                except Exception as e:
+                    print(f"  Failed to load image: {e}")
+                    return
+            
+            # Set interpolation to Closest for pixel-perfect textures
+            texture_node.interpolation = 'Closest'
+            
+            # Connect to Principled BSDF
+            node_tree = principled_node.id_data.node_tree
+            node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
+            node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
+            
+            print(f"  Successfully applied texture")
+        else:
+            print(f"  No texture to apply")
     
 
     
@@ -1382,13 +1422,10 @@ class HYTOPIA_MT_skin_menu(Menu):
         layout = self.layout
         props = context.scene.hytopia_props
         
-        # Default option
-        layout.operator("hytopia.set_skin", text="Default").skin_type = "default"
-        
-        # Get available skin options
+        # Get available skin options (excluding default)
         skin_options = texture_options_cache.get('skin', [])
         for item in skin_options:
-            if item[0] != 'default':  # Skip default as it's already shown
+            if item[0] != 'default':  # Skip default entirely
                 layout.operator("hytopia.set_skin", text=item[1]).skin_type = item[0]
 
 class HYTOPIA_MT_clothing_menu(Menu):
@@ -1400,13 +1437,10 @@ class HYTOPIA_MT_clothing_menu(Menu):
         layout = self.layout
         props = context.scene.hytopia_props
         
-        # None option
-        layout.operator("hytopia.set_clothing", text="None").clothing_type = "none"
-        
-        # Get available clothing options
+        # Get available clothing options (excluding none)
         clothing_options = texture_options_cache.get('clothing', [])
         for item in clothing_options:
-            if item[0] != 'none':  # Skip none as it's already shown
+            if item[0] != 'none':  # Skip none entirely
                 layout.operator("hytopia.set_clothing", text=item[1]).clothing_type = item[0]
 
 class HYTOPIA_MT_eyes_menu(Menu):
@@ -1596,34 +1630,41 @@ class HYTOPIA_OT_UseSelectSkin(Operator):
         
         # Set skin to first non-default option
         skin_options = texture_options_cache.get('skin', [])
-        for item in skin_options:
-            if item[0] != 'default':
-                props.skin_type = item[0]
-                break
+        if len(skin_options) > 1:  # More than just default
+            for item in skin_options:
+                if item[0] != 'default':
+                    props.skin_type = item[0]
+                    break
         
         # Set clothing to first non-none option
         clothing_options = texture_options_cache.get('clothing', [])
-        for item in clothing_options:
-            if item[0] != 'none':
-                props.clothing_type = item[0]
-                break
+        if len(clothing_options) > 1:  # More than just none
+            for item in clothing_options:
+                if item[0] != 'none':
+                    props.clothing_type = item[0]
+                    break
         
-        # Set eyes to first non-none option
-        eyes_options = texture_options_cache.get('eyes', [])
-        for item in eyes_options:
-            if item[0] != 'none':
-                props.eye_type = item[0]
-                break
+        # Eye color already has a good default (brown color picker)
         
-        # Set hair style to first available option
+        # Set hair style to first available option (or keep default 3)
         hair_style_options = texture_options_cache.get('hair_styles', [])
         if hair_style_options:
-            props.hair_style = hair_style_options[0][0]
+            # Check if style 3 is available, otherwise use first available
+            style_3_available = any(item[0] == '3' for item in hair_style_options)
+            if style_3_available:
+                props.hair_style = '3'  # Keep default
+            else:
+                props.hair_style = hair_style_options[0][0]  # Use first available
         
-        # Set hair color to first available option
+        # Set hair color to first available option (or keep default brown)
         hair_color_options = texture_options_cache.get('hair_colors', [])
         if hair_color_options:
-            props.hair_color = hair_color_options[0][0]
+            # Check if brown is available, otherwise use first available
+            brown_available = any(item[0] == 'brown' for item in hair_color_options)
+            if brown_available:
+                props.hair_color = 'brown'  # Keep default
+            else:
+                props.hair_color = hair_color_options[0][0]  # Use first available
 
 class HYTOPIA_OT_UseCustomSkin(Operator):
     """Use custom skin texture file"""
@@ -1705,30 +1746,65 @@ class HYTOPIA_PT_MainPanel(Panel):
             # Skin selection
             row = box.row()
             row.label(text="Skin Type:", icon='MATERIAL')
-            skin_display_text = "Select Skin..." if props.skin_type == 'default' else props.skin_type.replace('-', ' ').title()
+            skin_display_text = "Select Skin..." 
+            # Show actual selection if it's not the default/placeholder
+            skin_options = texture_options_cache.get('skin', [])
+            for item in skin_options:
+                if item[0] == props.skin_type and item[0] != 'default':
+                    skin_display_text = item[1]  # Use display name
+                    break
             row.operator("hytopia.select_skin", text=skin_display_text)
             
             # Clothing selection
             row = box.row()
             row.label(text="Clothing:", icon='OUTLINER_OB_MESH')
-            clothing_display_text = "Select Clothing..." if props.clothing_type == 'none' else f"Style {props.clothing_type}"
+            clothing_display_text = "Select Clothing..."
+            # Show actual selection if it's not the default/placeholder
+            clothing_options = texture_options_cache.get('clothing', [])
+            for item in clothing_options:
+                if item[0] == props.clothing_type and item[0] != 'none':
+                    clothing_display_text = item[1]  # Use display name
+                    break
             row.operator("hytopia.select_clothing", text=clothing_display_text)
             
-            # Eye selection
+            # Eye color picker (instead of eye selection)
             row = box.row()
-            row.label(text="Eyes:", icon='HIDE_OFF')
-            eye_display_text = "Select Eyes..." if props.eye_type == 'none' else props.eye_type.replace('-', ' ').title()
-            row.operator("hytopia.select_eyes", text=eye_display_text)
+            row.label(text="Eye Color:", icon='HIDE_OFF')
+            row.prop(props, "eye_color", text="")
             
             # Hair selection
             row = box.row()
             row.label(text="Hair Style:", icon='MOD_PARTICLES')
-            hair_style_display_text = f"Style {props.hair_style}" if props.hair_style != '1' else "Select Hair Style..."
+            hair_style_display_text = "Select Hair Style..."
+            # Show actual selection if it's not the default/placeholder
+            hair_style_options = texture_options_cache.get('hair_styles', [])
+            for item in hair_style_options:
+                if item[0] == props.hair_style and item[0] != '3':  # 3 is now default
+                    hair_style_display_text = item[1]  # Use display name
+                    break
+            # Special case: if hair_style is 3 and we have options, show it
+            if props.hair_style == '3' and hair_style_options:
+                for item in hair_style_options:
+                    if item[0] == '3':
+                        hair_style_display_text = item[1]
+                        break
             row.operator("hytopia.select_hair_style", text=hair_style_display_text)
             
             row = box.row()
             row.label(text="Hair Color:", icon='COLOR')
-            hair_color_display_text = "Select Hair Color..." if props.hair_color == 'brown' else props.hair_color.replace('-', ' ').title()
+            hair_color_display_text = "Select Hair Color..."
+            # Show actual selection if it's not the default/placeholder
+            hair_color_options = texture_options_cache.get('hair_colors', [])
+            for item in hair_color_options:
+                if item[0] == props.hair_color and item[0] != 'brown':
+                    hair_color_display_text = item[1]  # Use display name
+                    break
+            # Special case: if hair_color is brown and we have options, show it
+            if props.hair_color == 'brown' and hair_color_options:
+                for item in hair_color_options:
+                    if item[0] == 'brown':
+                        hair_color_display_text = item[1]
+                        break
             row.operator("hytopia.select_hair_color", text=hair_color_display_text)
             
         elif props.skin_method == 'CUSTOM':
@@ -1740,19 +1816,13 @@ class HYTOPIA_PT_MainPanel(Panel):
             # Hair type selection for custom method
             row = box.row()
             row.label(text="Hair Type:", icon='MOD_PARTICLES')
-            hair_type_display_text = f"Style {props.custom_hair_type}" if props.custom_hair_type != '1' else "Select Hair Type..."
+            hair_type_display_text = f"Style {props.custom_hair_type}" if props.custom_hair_type != '3' else "Select Hair Type..."
             row.operator("hytopia.select_custom_hair_type", text=hair_type_display_text)
             
             # Show file format info
             col = box.column()
             col.scale_y = 0.8
-            col.label(text="Supported formats: PNG, JPG, JPEG")
-            col.label(text="Recommended: 64x64 PNG with transparency")
-        
-        layout.separator()
-        
-        # Options
-        layout.prop(props, "import_animations", icon='ANIM')
+            col.label(text="Recommended: 256 x 256 PNG")
         
         layout.separator()
         
@@ -1785,24 +1855,18 @@ class HYTOPIA_PT_MainPanel(Panel):
                 col.label(text="is available.")
             
             layout.separator()
+            
+            # Import animations option (only for SELECT method)
+            layout.prop(props, "import_animations", icon='ANIM')
+            layout.separator()
+        else:
+            # Import animations option (for other methods)
+            layout.prop(props, "import_animations", icon='ANIM')
+            layout.separator()
         
         # Import button
         layout.operator("hytopia.import_player", text="Import Player", icon='IMPORT')
         
-        layout.separator()
-        
-        # Info section (only show for SELECT method)
-        if props.skin_method == 'SELECT':
-            box = layout.box()
-            box.label(text="Texture Layering:", icon='INFO')
-            col = box.column()
-            col.scale_y = 0.8
-            col.label(text="1. Skin (base)")
-            col.label(text="2. Eye base texture")
-            col.label(text="3. Eye color (if selected)")
-            col.label(text="4. Clothing layer")
-            col.label(text="5. Hair style & color")
-
 # Registration
 classes = [
     HytopiaProperties,
