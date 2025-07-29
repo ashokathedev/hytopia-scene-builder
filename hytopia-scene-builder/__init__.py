@@ -3,10 +3,10 @@ Hytopia Scene Builder Add-on
 
 A comprehensive Blender add-on for building Hytopia scenes with three main components:
 1. Map Importer - Import Hytopia world maps with blocks, textures, and entities
-2. Character Importer - Import and manage Hytopia characters (Coming Soon)
+2. Character Importer - Import and manage Hytopia characters with texture layering
 3. Asset Importer - Import various Hytopia assets and models (Coming Soon)
 
-Currently includes the Map Importer functionality with plans to expand.
+Currently includes Map Importer and Character Importer functionality.
 """
 
 bl_info = {
@@ -15,7 +15,7 @@ bl_info = {
     "version": (1, 0, 0),
     "blender": (3, 0, 0),
     "location": "3D Viewport > Sidebar > Hytopia Tab",
-    "description": "Complete scene building toolkit for Hytopia - import maps, characters, and assets",
+    "description": "Complete scene building toolkit for Hytopia - import maps and characters, with asset importing coming soon",
     "warning": "",
     "wiki_url": "",
     "category": "Import-Export",
@@ -32,8 +32,8 @@ try:
     from .map_importer import material_manager
     from .map_importer import utils
     
-    # Character Importer Components (coming soon)
-    # from . import character_importer
+    # Character Importer Components (now active)
+    from . import character_importer
     
     # Asset Importer Components (coming soon)
     # from . import asset_importer
@@ -64,15 +64,15 @@ def register():
         # Register Map Importer UI components
         ui_panel.register()
         
-        # Future: Register Character Importer components
-        # character_ui_panel.register()
+        # Register Character Importer components
+        character_importer.register()
         
         # Future: Register Asset Importer components  
         # asset_ui_panel.register()
         
         print("Hytopia Scene Builder add-on registered successfully")
-        print("Available components: Map Importer")
-        print("Coming soon: Character Importer, Asset Importer")
+        print("Available components: Map Importer, Character Importer")
+        print("Coming soon: Asset Importer")
         
     except Exception as e:
         print(f"Error registering Hytopia Scene Builder: {e}")
@@ -87,6 +87,9 @@ def unregister():
     try:
         # Unregister Map Importer UI components  
         ui_panel.unregister()
+        
+        # Unregister Character Importer components
+        character_importer.unregister()
         
         # Future: Unregister other components
         # character_ui_panel.unregister()

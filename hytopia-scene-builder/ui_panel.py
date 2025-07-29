@@ -198,11 +198,14 @@ class HYTOPIA_PT_main_panel(Panel):
         box.label(text="1. Map Importer", icon='WORLD')
         box.operator("hytopia.import_world", text="Import World Map", icon='IMPORT')
         
-        # Character Importer Section (Coming Soon)
+        # Character Importer Section (Now Available)
         box = layout.box()
         box.label(text="2. Character Importer", icon='ARMATURE_DATA')
-        box.enabled = False  # Disabled until implemented
-        box.label(text="Coming Soon", icon='INFO')
+        col = box.column()
+        col.scale_y = 0.8
+        col.label(text="✅ Available in Hytopia panel", icon='CHECKMARK')
+        col.label(text="Import customizable player characters", icon='INFO')
+        col.label(text="→ Look for 'Hytopia Character Importer' panel", icon='FORWARD')
         
         # Asset Importer Section (Coming Soon) 
         box = layout.box()
@@ -222,6 +225,7 @@ class HYTOPIA_PT_main_panel(Panel):
         box.label(text="Tips:", icon='HELP')
         box.label(text="• Start with small bounds for testing", icon='INFO')
         box.label(text="• Face culling improves performance", icon='INFO')
+        box.label(text="• Character importer has its own panel", icon='INFO')
         box.label(text="• Check console for detailed logs", icon='INFO')
 
 
