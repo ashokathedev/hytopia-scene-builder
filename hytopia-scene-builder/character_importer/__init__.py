@@ -758,6 +758,18 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                 print(f"  No Principled BSDF found for {mesh_obj.name}")
                 return
             
+            # Set specular IOR to 0 for proper character rendering
+            try:
+                # Set Specular IOR Level to 0
+                if 'Specular IOR Level' in principled_node.inputs:
+                    principled_node.inputs['Specular IOR Level'].default_value = 0.0
+                # Also set Specular to 0 for older Blender versions
+                if 'Specular' in principled_node.inputs:
+                    principled_node.inputs['Specular'].default_value = 0.0
+                print(f"  Set specular values to 0 for {mesh_obj.name}")
+            except Exception as e:
+                print(f"  Warning: Could not set specular values to 0 for {mesh_obj.name}: {e}")
+            
             # Create and configure texture node with the pre-loaded image
             if composite_image:
                 print(f"  Applying composite image: {composite_image.name}")
@@ -832,6 +844,18 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             if not principled_node:
                 print(f"  No Principled BSDF found for {mesh_obj.name}")
                 return
+            
+            # Set specular IOR to 0 for proper character rendering
+            try:
+                # Set Specular IOR Level to 0
+                if 'Specular IOR Level' in principled_node.inputs:
+                    principled_node.inputs['Specular IOR Level'].default_value = 0.0
+                # Also set Specular to 0 for older Blender versions
+                if 'Specular' in principled_node.inputs:
+                    principled_node.inputs['Specular'].default_value = 0.0
+                print(f"  Set specular values to 0 for {mesh_obj.name}")
+            except Exception as e:
+                print(f"  Warning: Could not set specular values to 0 for {mesh_obj.name}: {e}")
             
             # Create and configure texture node
             if texture_path and os.path.exists(texture_path):

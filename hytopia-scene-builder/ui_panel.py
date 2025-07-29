@@ -1,6 +1,6 @@
 """
-Blender UI panel for Hytopia Scene Builder
-Main panel for the unified Hytopia scene building toolkit with Map, Character, and Asset importers.
+Blender UI panel for Hytopia Map Importer
+Main panel for importing Hytopia world maps into Blender.
 """
 import os
 import bpy
@@ -179,8 +179,8 @@ class HYTOPIA_OT_clear_scene(Operator):
 
 
 class HYTOPIA_PT_main_panel(Panel):
-    """Main Hytopia Scene Builder Panel"""
-    bl_label = "Hytopia Scene Builder"
+    """Main Hytopia Map Importer Panel"""
+    bl_label = "Hytopia Map Importer"
     bl_idname = "HYTOPIA_PT_main_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -189,44 +189,12 @@ class HYTOPIA_PT_main_panel(Panel):
     def draw(self, context):
         layout = self.layout
         
-        # Main title
-        layout.label(text="Scene Builder Toolkit", icon='SCENE_DATA')
+        # Title
+        layout.label(text="Import Hytopia World Map", icon='WORLD')
         layout.separator()
         
-        # Map Importer Section (Currently Available)
-        box = layout.box()
-        box.label(text="1. Map Importer", icon='WORLD')
-        box.operator("hytopia.import_world", text="Import World Map", icon='IMPORT')
-        
-        # Character Importer Section (Now Available)
-        box = layout.box()
-        box.label(text="2. Character Importer", icon='ARMATURE_DATA')
-        col = box.column()
-        col.scale_y = 0.8
-        col.label(text="✅ Available in Hytopia panel", icon='CHECKMARK')
-        col.label(text="Import customizable player characters", icon='INFO')
-        col.label(text="→ Look for 'Hytopia Character Importer' panel", icon='FORWARD')
-        
-        # Asset Importer Section (Coming Soon) 
-        box = layout.box()
-        box.label(text="3. Asset Importer", icon='MESH_DATA')
-        box.enabled = False  # Disabled until implemented
-        box.label(text="Coming Soon", icon='INFO')
-        
-        # Utilities Section
-        layout.separator()
-        box = layout.box()
-        box.label(text="Utilities", icon='TOOL_SETTINGS')
-        box.operator("hytopia.clear_scene", text="Clear Scene", icon='TRASH')
-        
-        # Info section  
-        layout.separator()
-        box = layout.box()
-        box.label(text="Tips:", icon='HELP')
-        box.label(text="• Start with small bounds for testing", icon='INFO')
-        box.label(text="• Face culling improves performance", icon='INFO')
-        box.label(text="• Character importer has its own panel", icon='INFO')
-        box.label(text="• Check console for detailed logs", icon='INFO')
+        # Import button
+        layout.operator("hytopia.import_world", text="Import World Map", icon='IMPORT')
 
 
 
@@ -235,7 +203,6 @@ class HYTOPIA_PT_main_panel(Panel):
 # Registration functions
 classes = [
     HYTOPIA_OT_import_world,
-    HYTOPIA_OT_clear_scene, 
     HYTOPIA_PT_main_panel,
 ]
 
