@@ -521,8 +521,16 @@ class HYTOPIA_OT_ImportPlayer(Operator):
 
             print(f"Using blend file: {blend_path}")
 
-            # Track existing objects
+            # Track existing objects and actions (to detect duplicated animation data)
             existing_objects = set(bpy.context.scene.objects)
+            def _base(n: str) -> str:
+                try:
+                    return re.sub(r"\.\d+$", "", n)
+                except Exception:
+                    return n
+            pre_actions = list(bpy.data.actions)
+            pre_action_bases = {_base(a.name) for a in pre_actions}
+            pre_action_by_base = { _base(a.name): a for a in pre_actions }
 
             # Append the collection "Hytopia Character"
             collection_dir = os.path.join(blend_path, "Collection") + os.sep
@@ -565,6 +573,16 @@ class HYTOPIA_OT_ImportPlayer(Operator):
 
             # Collect target meshes
             target_meshes = [o for o in new_objects if o.type == 'MESH']
+            # Collect newly added actions
+            post_actions = list(bpy.data.actions)
+            new_actions = [a for a in post_actions if a not in pre_actions]
+
+            # If duplicate actions were appended, reassign to existing and remove duplicates
+            if new_actions:
+                duplicated = [a for a in new_actions if _base(a.name) in pre_action_bases]
+                if duplicated:
+                    print(f"Found {len(duplicated)} duplicated actions; reusing existing and removing duplicates")
+                    self.reassign_and_cleanup_duplicate_actions(new_objects, duplicated, pre_action_by_base)
 
             # Apply method-specific actions
             if props.skin_method == 'DEFAULT':
@@ -589,6 +607,40 @@ class HYTOPIA_OT_ImportPlayer(Operator):
         except Exception as e:
             self.report({'ERROR'}, f"Import failed: {str(e)}")
             return {'CANCELLED'}
+
+    def reassign_and_cleanup_duplicate_actions(self, new_objects, duplicated_actions, pre_action_by_base):
+        """For duplicated appended actions, reassign users to existing pre-append actions and remove duplicates."""
+        # Build map from duplicate action to existing action by base name
+        def _base(n: str) -> str:
+            try:
+                return re.sub(r"\.\d+$", "", n)
+            except Exception:
+                return n
+        dup_to_existing = {}
+        for act in duplicated_actions:
+            existing = pre_action_by_base.get(_base(act.name))
+            if existing:
+                dup_to_existing[act] = existing
+        if not dup_to_existing:
+            return
+        # Reassign on animation_data.action and NLA strips
+        for obj in new_objects:
+            ad = getattr(obj, 'animation_data', None)
+            if not ad:
+                continue
+            if getattr(ad, 'action', None) in dup_to_existing:
+                ad.action = dup_to_existing[ad.action]
+            for track in getattr(ad, 'nla_tracks', []) or []:
+                for strip in getattr(track, 'strips', []) or []:
+                    if getattr(strip, 'action', None) in dup_to_existing:
+                        strip.action = dup_to_existing[strip.action]
+        # Remove duplicates with no users
+        for dup, existing in dup_to_existing.items():
+            try:
+                if dup.users == 0:
+                    bpy.data.actions.remove(dup, do_unlink=True)
+            except Exception:
+                pass
 
     def find_primary_mesh(self, objects):
         """Return the mesh object that contains hair vertex groups, or None"""
