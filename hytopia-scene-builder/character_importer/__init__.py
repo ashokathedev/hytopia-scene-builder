@@ -178,7 +178,7 @@ def composite_character_texture(textures, cache_dir, import_id):
 SKIN_FALLBACK_ITEMS = [('default', 'Default', 'Default skin')]
 CLOTHING_FALLBACK_ITEMS = [('none', 'None', 'No clothing')]
 EYES_FALLBACK_ITEMS = [('none', 'None', 'No eyes')]
-HAIR_STYLE_FALLBACK_ITEMS = [('3', 'Style 3', 'Hair style 3')]
+HAIR_STYLE_FALLBACK_ITEMS = [('8', 'Style 8', 'Hair style 8')]
 HAIR_COLOR_FALLBACK_ITEMS = [('brown', 'Brown', 'Brown hair')]
 
 # Global cache for texture options - initialized with fallback items
@@ -443,7 +443,7 @@ class HytopiaProperties(PropertyGroup):
     custom_hair_type: StringProperty(
         name="Hair Type",
         description="Selected hair type for custom skin method",
-        default="3"
+        default="8"
     )
     
     # Character customization options - using simple string properties
@@ -468,7 +468,7 @@ class HytopiaProperties(PropertyGroup):
     hair_style: StringProperty(
         name="Hair Style",
         description="Selected hair style",
-        default="3"
+        default="8"
     )
     
     hair_color: StringProperty(
@@ -489,84 +489,314 @@ class HytopiaProperties(PropertyGroup):
     )
 
 class HYTOPIA_OT_ImportPlayer(Operator):
-    """Import Hytopia Player Character with Custom Textures"""
+    """Append rigged Hytopia Character and apply textures/masks"""
     bl_idname = "hytopia.import_player"
     bl_label = "Import Hytopia Player"
     bl_description = "Download and import the Hytopia player model with custom texture layering"
     bl_options = {'REGISTER', 'UNDO'}
     
     def execute(self, context):
-        """Execute the import operation"""
+        """Execute the import operation using .blend append"""
         props = context.scene.hytopia_props
-        
         try:
             # Create unique directory for this import instance
             import_id = f"hytopia_character_{len(bpy.data.objects):04d}"
             addon_dir = os.path.dirname(__file__)
+            addon_root = os.path.dirname(addon_dir)
             cache_dir = os.path.join(addon_dir, "texture_cache", import_id)
             os.makedirs(cache_dir, exist_ok=True)
-            
-            temp_gltf_path = os.path.join(cache_dir, "player.gltf")
-            
-            # Download the GLTF file
-            self.report({'INFO'}, f"Downloading player model from: {props.player_url}")
-            urllib.request.urlretrieve(props.player_url, temp_gltf_path)
-            
-            # Check if file was downloaded successfully
-            if not os.path.exists(temp_gltf_path):
-                self.report({'ERROR'}, "Failed to download player model")
-                return {'CANCELLED'}
-            
-            # Store existing objects before import
+
+            # Resolve .blend path (try in addon root first, then project root)
+            possible_blend_paths = [
+                os.path.join(addon_root, "hytopia-character.blend"),
+                os.path.join(os.path.dirname(addon_root), "hytopia-character.blend"),
+            ]
+            blend_path = None
+            for p in possible_blend_paths:
+                if os.path.exists(p):
+                    blend_path = p
+                    break
+            if not blend_path:
+                raise Exception("Could not find hytopia-character.blend in addon or project root")
+
+            print(f"Using blend file: {blend_path}")
+
+            # Track existing objects
             existing_objects = set(bpy.context.scene.objects)
-            
-            # Import the GLTF file
-            bpy.ops.import_scene.gltf(
-                filepath=temp_gltf_path,
-                import_pack_images=True,
-                import_shading='NORMALS',
-                bone_heuristic='TEMPERANCE',
-                guess_original_bind_pose=True
-            )
-            
-            # Get newly imported objects
-            new_objects = set(bpy.context.scene.objects) - existing_objects
-            imported_objects = list(new_objects)
-            
-            print(f"Imported {len(imported_objects)} new objects:")
-            for obj in imported_objects:
-                print(f"  - {obj.name} (type: {obj.type})")
-            
+
+            # Append the collection "Hytopia Character"
+            collection_dir = os.path.join(blend_path, "Collection") + os.sep
+            print(f"Appending collection from: {collection_dir}")
+            bpy.ops.wm.append(directory=collection_dir, filename="Hytopia Character", link=False)
+
+            # Ensure collection is linked to scene
+            appended_collection = bpy.data.collections.get("Hytopia Character")
+            if appended_collection:
+                scene_child_names = [c.name for c in bpy.context.scene.collection.children]
+                if appended_collection.name not in scene_child_names:
+                    bpy.context.scene.collection.children.link(appended_collection)
+                print("Linked appended collection to the scene")
+
+            # Gather newly added objects
+            new_objects = list(set(bpy.context.scene.objects) - existing_objects)
+            if not new_objects and appended_collection:
+                # Fallback: collect objects from the appended collection
+                new_objects = [obj for obj in appended_collection.all_objects]
+
+            if not new_objects:
+                raise Exception("No objects were appended from the blend file")
+
+            print(f"Appended {len(new_objects)} objects from collection 'Hytopia Character'")
+
+            # Ensure objects are accessible under the scene via the linked collection (no per-object relinking necessary)
+
             # Rename imported objects to be unique for this character
-            self.rename_imported_objects(imported_objects, import_id)
-            
-            # Apply textures based on selected method
+            self.rename_imported_objects(new_objects, import_id)
+
+            # Find the primary mesh (the one holding hair vertex groups)
+            primary_mesh = self.find_primary_mesh(new_objects)
+            if not primary_mesh:
+                print("Warning: Could not locate primary character mesh with hair groups. Using first mesh as fallback.")
+                primary_candidates = [o for o in new_objects if o.type == 'MESH']
+                primary_mesh = primary_candidates[0] if primary_candidates else None
+            if not primary_mesh:
+                raise Exception("No mesh objects found in appended collection")
+            print(f"Primary character mesh: {primary_mesh.name}")
+
+            # Collect target meshes
+            target_meshes = [o for o in new_objects if o.type == 'MESH']
+
+            # Apply method-specific actions
             if props.skin_method == 'DEFAULT':
-                # Default method - just set specular values, don't change textures
-                self.apply_default_skin(imported_objects, import_id)
-                # Manage hair visibility - show only hair-0001
-                self.manage_hair_visibility(imported_objects, props, import_id)
-                self.report({'INFO'}, f"Hytopia player imported with default skin! (ID: {import_id})")
-                
+                # Do not modify materials; only reduce specular on all materials and set hair masks to style 8
+                self.apply_default_skin(target_meshes, import_id)
+                self.apply_hair_masks_for_method(primary_mesh, props, default_style=8)
+                self.report({'INFO'}, f"Hytopia character appended with default materials (hair 8). ID: {import_id}")
             elif props.skin_method == 'SELECT':
-                # Select method - use current layered texture system
-                self.apply_layered_textures(props, cache_dir, import_id, imported_objects)
-                # Manage hair visibility - show only selected hair style
-                self.manage_hair_visibility(imported_objects, props, import_id)
-                self.report({'INFO'}, f"Hytopia player imported with selected textures! (ID: {import_id})")
-                
+                # Build composite and apply to the primary mesh
+                print("Building composite for selections...")
+                self.apply_layered_textures(props, cache_dir, import_id, target_meshes)
+                self.apply_hair_masks_for_method(primary_mesh, props)
+                self.report({'INFO'}, f"Hytopia character appended with selected textures. ID: {import_id}")
             elif props.skin_method == 'CUSTOM':
-                # Custom method - use provided custom skin file
-                self.apply_custom_skin(props, cache_dir, import_id, imported_objects)
-                # Manage hair visibility - show only selected custom hair type
-                self.manage_hair_visibility(imported_objects, props, import_id)
-                self.report({'INFO'}, f"Hytopia player imported with custom skin! (ID: {import_id})")
-            
+                # Load and apply custom texture to the primary mesh
+                print("Applying custom skin texture...")
+                self.apply_custom_skin(props, cache_dir, import_id, target_meshes)
+                self.apply_hair_masks_for_method(primary_mesh, props, is_custom=True)
+                self.report({'INFO'}, f"Hytopia character appended with custom texture. ID: {import_id}")
+
             return {'FINISHED'}
-            
         except Exception as e:
             self.report({'ERROR'}, f"Import failed: {str(e)}")
             return {'CANCELLED'}
+
+    def find_primary_mesh(self, objects):
+        """Return the mesh object that contains hair vertex groups, or None"""
+        hair_regex = re.compile(r"(?:^|\b)hair-(\d{1,4})(?:[-_].*)?$", re.IGNORECASE)
+        for obj in objects:
+            if obj.type != 'MESH' or not obj.data or not obj.vertex_groups:
+                continue
+            for vg in obj.vertex_groups:
+                if hair_regex.match(vg.name):
+                    print(f"Found primary mesh candidate: {obj.name} via group {vg.name}")
+                    return obj
+        return None
+
+    def _find_principled_node(self, material):
+        if not material or not material.use_nodes:
+            return None
+        for node in material.node_tree.nodes:
+            if node.type == 'BSDF_PRINCIPLED':
+                return node
+        return None
+
+    def _pick_image_texture_node(self, material, principled_node):
+        """Pick the most likely image texture node driving Base Color.
+        Preference order:
+        1) TEX_IMAGE directly linked to Principled Base Color
+        2) TEX_IMAGE named/labelled 'BASE COLOR'
+        3) First TEX_IMAGE in node tree
+        """
+        if not material or not material.use_nodes:
+            return None
+        nodes = material.node_tree.nodes
+        # 1) direct link to Principled Base Color
+        if principled_node and 'Base Color' in principled_node.inputs:
+            base_input = principled_node.inputs['Base Color']
+            for link in base_input.links:
+                if link.from_node and link.from_node.type == 'TEX_IMAGE':
+                    return link.from_node
+        # 2) by name/label
+        for node in nodes:
+            if node.type == 'TEX_IMAGE':
+                name = (node.name or '').lower()
+                label = (node.label or '').lower()
+                if 'base color' in name or 'base color' in label:
+                    return node
+        # 3) first TEX_IMAGE
+        for node in nodes:
+            if node.type == 'TEX_IMAGE':
+                return node
+        return None
+
+    def _ensure_alpha_clip(self, material):
+        try:
+            material.blend_method = 'CLIP'
+            material.shadow_method = 'CLIP'
+        except Exception:
+            pass
+
+    def set_image_on_existing_material(self, material, image, import_id):
+        """Swap the image on the existing Image Texture node. Create one if none exists."""
+        if not material:
+            return False
+        if not material.use_nodes:
+            material.use_nodes = True
+        principled = self._find_principled_node(material)
+        if principled is None:
+            return False
+        # Set specular to 0 where available
+        try:
+            if 'Specular IOR Level' in principled.inputs:
+                principled.inputs['Specular IOR Level'].default_value = 0.0
+            if 'Specular' in principled.inputs:
+                principled.inputs['Specular'].default_value = 0.0
+        except Exception:
+            pass
+        tex = self._pick_image_texture_node(material, principled)
+        if tex is None:
+            # Create a new one and wire it minimally to Base Color and Alpha
+            tex = material.node_tree.nodes.new(type='ShaderNodeTexImage')
+            tex.location = (-600, 300)
+            tex.name = f"Character_Texture_{import_id}"
+            # Link
+            try:
+                material.node_tree.links.new(tex.outputs['Color'], principled.inputs['Base Color'])
+                if 'Alpha' in principled.inputs:
+                    material.node_tree.links.new(tex.outputs['Alpha'], principled.inputs['Alpha'])
+            except Exception:
+                pass
+        # Assign image and sampling settings
+        if image is not None:
+            tex.image = image
+        try:
+            tex.interpolation = 'Closest'
+        except Exception:
+            pass
+        self._ensure_alpha_clip(material)
+        return True
+
+    def apply_image_to_mesh(self, mesh_obj, image, import_id):
+        """Set the provided image on all materials of the mesh, reusing the existing node setup."""
+        if mesh_obj.type != 'MESH' or not mesh_obj.data or not mesh_obj.data.materials:
+            return
+        for mat in mesh_obj.data.materials:
+            self.set_image_on_existing_material(mat, image, import_id)
+
+    def group_hair_vertex_groups(self, mesh_obj):
+        """Map hair style number (int) to a list of vertex group names belonging to that style"""
+        mapping = {}
+        hair_regex = re.compile(r"(?:^|\b)hair-(\d{1,4})(?:[-_].*)?$", re.IGNORECASE)
+        for vg in mesh_obj.vertex_groups:
+            m = hair_regex.match(vg.name)
+            if not m:
+                continue
+            try:
+                style_num = int(m.group(1))
+            except ValueError:
+                continue
+            mapping.setdefault(style_num, []).append(vg.name)
+        print(f"Hair vertex groups found: { {k: len(v) for k, v in mapping.items()} }")
+        return mapping
+
+    def clear_existing_hair_masks(self, mesh_obj):
+        """Remove previously added hair Mask modifiers"""
+        to_remove = [mod for mod in mesh_obj.modifiers if mod.type == 'MASK' and mod.name.startswith('HairMask')]
+        for mod in to_remove:
+            mesh_obj.modifiers.remove(mod)
+
+    def build_union_vertex_group(self, mesh_obj, target_group_name, source_group_names):
+        """Create a vertex group that is the union of all vertices in source_group_names"""
+        # Remove existing target group if present
+        existing = mesh_obj.vertex_groups.get(target_group_name)
+        if existing:
+            mesh_obj.vertex_groups.remove(existing)
+        union_group = mesh_obj.vertex_groups.new(name=target_group_name)
+        # Map source names to indices
+        source_indices = []
+        for name in source_group_names:
+            vg = mesh_obj.vertex_groups.get(name)
+            if vg:
+                source_indices.append(vg.index)
+        if not source_indices:
+            return union_group
+        # Build set of vertices that belong to any source group
+        union_vertex_indices = set()
+        # Ensure we evaluate on the evaluated depsgraph copy to get up-to-date groups
+        for v in mesh_obj.data.vertices:
+            for g in v.groups:
+                if g.group in source_indices and g.weight > 0.0:
+                    union_vertex_indices.add(v.index)
+                    break
+        if union_vertex_indices:
+            union_group.add(list(union_vertex_indices), 1.0, 'REPLACE')
+        return union_group
+
+    def reorder_mask_modifiers_before_armature(self, mesh_obj):
+        """Ensure mask modifiers are evaluated before armature for correct hiding"""
+        # Move all HairMask modifiers to the top in original order to ensure they run before Armature
+        mask_names = [m.name for m in mesh_obj.modifiers if m.type == 'MASK' and m.name.startswith('HairMask')]
+        for name in mask_names:
+            try:
+                idx = mesh_obj.modifiers.find(name)
+                while idx > 0:
+                    mesh_obj.modifiers.move(idx, idx - 1)
+                    idx -= 1
+            except Exception:
+                pass
+
+    def apply_hair_masks(self, mesh_obj, selected_style):
+        """Hide hair vertex groups not matching the selected style using Mask modifiers"""
+        if mesh_obj.type != 'MESH':
+            return
+        mapping = self.group_hair_vertex_groups(mesh_obj)
+        if not mapping:
+            print(f"No hair vertex groups found on {mesh_obj.name}")
+            return
+        self.clear_existing_hair_masks(mesh_obj)
+        # Build a union of all non-selected hair groups
+        non_selected_group_names = []
+        for style_num, group_names in mapping.items():
+            if style_num == selected_style:
+                continue
+            non_selected_group_names.extend(group_names)
+        union_name = f"HairMaskUnion_Not_{selected_style:04d}"
+        union_group = self.build_union_vertex_group(mesh_obj, union_name, non_selected_group_names)
+        # Single mask to hide the union group
+        mask = mesh_obj.modifiers.new(name=f"HairMask_{selected_style:04d}", type='MASK')
+        mask.vertex_group = union_group.name
+        mask.invert_vertex_group = True  # hide union, keep body + selected hair
+        mask.show_viewport = True
+        mask.show_render = True
+        mask.show_in_editmode = True
+        self.reorder_mask_modifiers_before_armature(mesh_obj)
+        print(f"Applied hair mask using union group '{union_group.name}' (selected style {selected_style}) on {mesh_obj.name}")
+
+    def apply_hair_masks_for_method(self, mesh_obj, props, default_style=None, is_custom=False):
+        """Pick target hair style based on method and apply masks"""
+        try:
+            if default_style is not None and props.skin_method == 'DEFAULT':
+                target_style = int(default_style)
+            elif props.skin_method == 'SELECT':
+                target_style = int(props.hair_style)
+            elif props.skin_method == 'CUSTOM':
+                target_style = int(props.custom_hair_type)
+            else:
+                target_style = int(default_style or 8)
+        except Exception:
+            target_style = int(default_style or 8)
+        print(f"Applying hair masks for style {target_style} on {mesh_obj.name}")
+        self.apply_hair_masks(mesh_obj, target_style)
     
     def rename_imported_objects(self, imported_objects, import_id):
         """Rename imported objects to be unique for this character instance"""
@@ -600,6 +830,41 @@ class HYTOPIA_OT_ImportPlayer(Operator):
                     
         except Exception as e:
             print(f"Error renaming objects: {e}")
+    
+    def rotate_imported_objects(self, imported_objects):
+        """Rotate all imported objects 180 degrees around Z axis to fix orientation"""
+        try:
+            import math
+            
+            print(f"Rotating {len(imported_objects)} imported objects 180° around Z axis...")
+            
+            # 180 degrees in radians
+            rotation_angle = math.radians(180)
+            
+            for obj in imported_objects:
+                # Only rotate objects that have rotation (mesh, armature, etc.)
+                if hasattr(obj, 'rotation_euler'):
+                    # Get current rotation
+                    current_rotation = obj.rotation_euler.copy()
+                    
+                    # Add 180 degrees to Z rotation
+                    new_z_rotation = current_rotation.z + rotation_angle
+                    
+                    # Normalize to 0-2π range
+                    while new_z_rotation > 2 * math.pi:
+                        new_z_rotation -= 2 * math.pi
+                    
+                    # Apply new rotation
+                    obj.rotation_euler.z = new_z_rotation
+                    
+                    print(f"  Rotated {obj.name}: Z rotation {math.degrees(current_rotation.z):.1f}° → {math.degrees(new_z_rotation):.1f}°")
+                else:
+                    print(f"  Skipped {obj.name}: no rotation_euler attribute")
+            
+            print(f"Rotation applied to {len(imported_objects)} objects")
+            
+        except Exception as e:
+            print(f"Error rotating objects: {e}")
     
     def apply_default_skin(self, imported_objects, import_id):
         """Apply default skin method - just set specular values to 0, preserve existing textures"""
@@ -689,7 +954,7 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             raise  # Re-raise to show error in UI
     
     def apply_custom_to_mesh(self, mesh_obj, custom_image, import_id):
-        """Apply a custom skin image to a mesh object with unique material"""
+        """Apply a custom skin image by swapping images on existing materials"""
         try:
             print(f"  Processing custom skin for mesh: {mesh_obj.name}")
             
@@ -697,69 +962,9 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             bpy.context.view_layer.objects.active = mesh_obj
             bpy.ops.object.mode_set(mode='OBJECT')
             
-            # Create unique material for this instance
-            material_name = f"Custom_Skin_Material_{import_id}_{mesh_obj.name}_{len(bpy.data.materials):04d}"
-            material = bpy.data.materials.new(name=material_name)
-            print(f"    Created material: {material_name}")
-            
-            # Assign material to mesh object
-            if mesh_obj.data.materials:
-                mesh_obj.data.materials[0] = material
-            else:
-                mesh_obj.data.materials.append(material)
-            
-            # Ensure material uses nodes
-            if not material.use_nodes:
-                material.use_nodes = True
-            
-            # Clear existing texture nodes
-            nodes_to_remove = []
-            for node in material.node_tree.nodes:
-                if node.type == 'TEX_IMAGE':
-                    nodes_to_remove.append(node)
-            for node in nodes_to_remove:
-                material.node_tree.nodes.remove(node)
-            
-            # Find the Principled BSDF node
-            principled_node = None
-            for node in material.node_tree.nodes:
-                if node.type == 'BSDF_PRINCIPLED':
-                    principled_node = node
-                    break
-            
-            if not principled_node:
-                print(f"    No Principled BSDF found for {mesh_obj.name}")
-                return
-            
-            # Set specular values to 0
-            try:
-                if 'Specular IOR Level' in principled_node.inputs:
-                    principled_node.inputs['Specular IOR Level'].default_value = 0.0
-                if 'Specular' in principled_node.inputs:
-                    principled_node.inputs['Specular'].default_value = 0.0
-                print(f"    Set specular values to 0 for {mesh_obj.name}")
-            except Exception as e:
-                print(f"    Warning: Could not set specular values for {mesh_obj.name}: {e}")
-            
-            # Create and configure texture node
             if custom_image:
                 print(f"    Applying custom image: {custom_image.name}")
-                
-                # Create image texture node
-                texture_node = material.node_tree.nodes.new(type='ShaderNodeTexImage')
-                texture_node.location = (-600, 300)
-                texture_node.name = f"Custom_Skin_{import_id}"
-                
-                # Assign the custom image
-                texture_node.image = custom_image
-                
-                # Set interpolation to Closest for pixel-perfect textures
-                texture_node.interpolation = 'Closest'
-                
-                # Connect to Principled BSDF
-                material.node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
-                material.node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
-                
+                self.apply_image_to_mesh(mesh_obj, custom_image, import_id)
                 print(f"    Successfully applied custom skin to {mesh_obj.name}")
             else:
                 print(f"    No custom image provided for {mesh_obj.name}")
@@ -768,74 +973,15 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             print(f"Failed to apply custom skin to {mesh_obj.name}: {str(e)}")
     
     def manage_hair_visibility(self, imported_objects, props, import_id):
-        """Manage hair object visibility based on selected skin method and hair style"""
+        """Backwards-compat: apply hair masks on a single-mesh character instead of toggling objects"""
         try:
-            print(f"Managing hair visibility for character {import_id}...")
-            
-            # Find all hair objects
-            hair_objects = []
-            for obj in imported_objects:
-                if obj.name.startswith("hair-") and len(obj.name) >= 9:  # hair-XXXX format
-                    try:
-                        # Extract hair number from name like "hair-0001" -> "0001"
-                        hair_number_str = obj.name[5:9]  # Get characters 5-8 (0001)
-                        hair_number = int(hair_number_str)
-                        hair_objects.append((obj, hair_number, hair_number_str))
-                        print(f"  Found hair object: {obj.name} (style {hair_number})")
-                    except (ValueError, IndexError):
-                        print(f"  Skipping malformed hair object name: {obj.name}")
-                        continue
-            
-            if not hair_objects:
-                print("  No hair objects found")
+            primary_mesh = self.find_primary_mesh(imported_objects)
+            if not primary_mesh:
+                print("No primary mesh with hair groups found for hair visibility")
                 return
-            
-            # Determine which hair style to show
-            target_hair_style = None
-            
-            if props.skin_method == 'DEFAULT':
-                target_hair_style = 3  # Always show hair-0003 for default (changed from 2)
-                print(f"  Default method: showing hair style {target_hair_style}")
-                
-            elif props.skin_method == 'SELECT':
-                try:
-                    target_hair_style = int(props.hair_style)
-                    print(f"  Select method: showing hair style {target_hair_style}")
-                except ValueError:
-                    target_hair_style = 3  # Fallback to style 3 (changed from 2)
-                    print(f"  Select method: invalid hair style, fallback to {target_hair_style}")
-                    
-            elif props.skin_method == 'CUSTOM':
-                try:
-                    target_hair_style = int(props.custom_hair_type)
-                    print(f"  Custom method: showing hair style {target_hair_style}")
-                except ValueError:
-                    target_hair_style = 3  # Fallback to style 3 (changed from 2)
-                    print(f"  Custom method: invalid hair type, fallback to {target_hair_style}")
-            
-            # Hide/show hair objects based on target style
-            for hair_obj, hair_number, hair_number_str in hair_objects:
-                if hair_number == target_hair_style:
-                    # Show this hair style
-                    hair_obj.hide_viewport = False
-                    hair_obj.hide_render = False
-                    print(f"    Showing: {hair_obj.name}")
-                    
-                    # Also show any child objects in the hierarchy
-                    self.show_hair_hierarchy(hair_obj)
-                else:
-                    # Hide this hair style
-                    hair_obj.hide_viewport = True
-                    hair_obj.hide_render = True
-                    print(f"    Hiding: {hair_obj.name}")
-                    
-                    # Also hide any child objects in the hierarchy
-                    self.hide_hair_hierarchy(hair_obj)
-            
-            print(f"  Hair visibility management completed for style {target_hair_style}")
-            
+            self.apply_hair_masks_for_method(primary_mesh, props)
         except Exception as e:
-            print(f"Failed to manage hair visibility: {e}")
+            print(f"Failed to apply hair masks: {e}")
     
     def show_hair_hierarchy(self, hair_obj):
         """Show hair object and all its children"""
@@ -938,7 +1084,7 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             
             
             # Download hair texture
-            if props.hair_style != '3' or props.hair_color != 'brown':
+            if props.hair_style != '8' or props.hair_color != 'brown':
                 print(f"  Downloading hair texture: {props.hair_style}/{props.hair_color}")
                 # Try different possible hair texture paths
                 hair_paths = [
@@ -1031,7 +1177,7 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             self.report({'WARNING'}, f"Failed to apply individual textures: {str(e)}")
     
     def apply_composite_to_mesh(self, mesh_obj, composite_image, import_id):
-        """Apply a pre-loaded composite image to a mesh object with unique material"""
+        """Apply a pre-loaded composite image to a mesh by swapping images in existing materials"""
         try:
             print(f"Processing mesh object: {mesh_obj.name}")
             
@@ -1043,83 +1189,21 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             bpy.context.view_layer.objects.active = mesh_obj
             bpy.ops.object.mode_set(mode='OBJECT')
             
-            # Create unique material for this instance (always create new)
-            material_name = f"Hytopia_Material_{import_id}_{mesh_obj.name}_{len(bpy.data.materials):04d}"
-            
-            # Always create a new material to avoid conflicts
-            material = bpy.data.materials.new(name=material_name)
-            print(f"  Created new material: {material_name}")
-            
-            # Assign material to mesh object
-            if mesh_obj.data.materials:
-                mesh_obj.data.materials[0] = material
-                print(f"  Replaced existing material slot")
-            else:
-                mesh_obj.data.materials.append(material)
-                print(f"  Added material to empty slot")
-            
-            print(f"  Material assigned: {material.name}")
-            
-            # Ensure material uses nodes
-            if not material.use_nodes:
-                material.use_nodes = True
-            
-            # Clear existing texture nodes
-            nodes_to_remove = []
-            for node in material.node_tree.nodes:
-                if node.type == 'TEX_IMAGE':
-                    nodes_to_remove.append(node)
-            for node in nodes_to_remove:
-                material.node_tree.nodes.remove(node)
-            
-            # Find the Principled BSDF node
-            principled_node = None
-            for node in material.node_tree.nodes:
-                if node.type == 'BSDF_PRINCIPLED':
-                    principled_node = node
-                    break
-            
-            if not principled_node:
-                print(f"  No Principled BSDF found for {mesh_obj.name}")
-                return
-            
-            # Set specular values to 0
-            try:
-                if 'Specular IOR Level' in principled_node.inputs:
-                    principled_node.inputs['Specular IOR Level'].default_value = 0.0
-                if 'Specular' in principled_node.inputs:
-                    principled_node.inputs['Specular'].default_value = 0.0
-                print(f"  Set specular values to 0 for {mesh_obj.name}")
-            except Exception as e:
-                print(f"  Warning: Could not set specular values for {mesh_obj.name}: {e}")
-            
             # Apply material based on object type
             if is_pupil:
                 # Apply solid eye color for pupil objects
                 props = bpy.context.scene.hytopia_props
                 print(f"  Applying solid eye color to pupil: {mesh_obj.name}")
-                principled_node.inputs['Base Color'].default_value = props.eye_color
+                # Apply to all materials' Principled nodes
+                for mat in mesh_obj.data.materials:
+                    pn = self._find_principled_node(mat)
+                    if pn and 'Base Color' in pn.inputs:
+                        pn.inputs['Base Color'].default_value = props.eye_color
                 print(f"  Applied eye color: {props.eye_color}")
             else:
-                # Create and configure texture node with the pre-loaded image
                 if composite_image:
                     print(f"  Applying composite image: {composite_image.name}")
-                    
-                    # Create image texture node
-                    texture_node = material.node_tree.nodes.new(type='ShaderNodeTexImage')
-                    texture_node.location = (-600, 300)
-                    texture_node.name = f"Character_Composite_{import_id}"
-                    
-                    # Assign the pre-loaded composite image
-                    texture_node.image = composite_image
-                    
-                    # Set interpolation to Closest for pixel-perfect textures
-                    texture_node.interpolation = 'Closest'
-                    
-                    # Connect to Principled BSDF
-                    material.node_tree.links.new(texture_node.outputs['Color'], principled_node.inputs['Base Color'])
-                    material.node_tree.links.new(texture_node.outputs['Alpha'], principled_node.inputs['Alpha'])
-                    
+                    self.apply_image_to_mesh(mesh_obj, composite_image, import_id)
                     print(f"  Successfully applied composite texture to {mesh_obj.name}")
                 else:
                     print(f"  No composite image provided for {mesh_obj.name}")
@@ -1140,71 +1224,29 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             bpy.context.view_layer.objects.active = mesh_obj
             bpy.ops.object.mode_set(mode='OBJECT')
             
-            # Create unique material for this instance (always create new)
-            material_name = f"Hytopia_Material_{import_id}_{mesh_obj.name}_{len(bpy.data.materials):04d}"
-            
-            # Always create a new material to avoid conflicts
-            material = bpy.data.materials.new(name=material_name)
-            print(f"  Created new material: {material_name}")
-            
-            # Assign material to mesh object
-            if mesh_obj.data.materials:
-                mesh_obj.data.materials[0] = material
-                print(f"  Replaced existing material slot")
-            else:
-                mesh_obj.data.materials.append(material)
-                print(f"  Added material to empty slot")
-            
-            print(f"  Material assigned: {material.name}")
-            
-            # Ensure material uses nodes
-            if not material.use_nodes:
-                material.use_nodes = True
-            
-            # Clear existing texture nodes
-            nodes_to_remove = []
-            for node in material.node_tree.nodes:
-                if node.type == 'TEX_IMAGE':
-                    nodes_to_remove.append(node)
-            for node in nodes_to_remove:
-                material.node_tree.nodes.remove(node)
-            
-            # Find the Principled BSDF node
-            principled_node = None
-            for node in material.node_tree.nodes:
-                if node.type == 'BSDF_PRINCIPLED':
-                    principled_node = node
-                    break
-            
-            if not principled_node:
-                print(f"  No Principled BSDF found for {mesh_obj.name}")
-                return
-            
-            # Set specular values to 0
-            try:
-                if 'Specular IOR Level' in principled_node.inputs:
-                    principled_node.inputs['Specular IOR Level'].default_value = 0.0
-                if 'Specular' in principled_node.inputs:
-                    principled_node.inputs['Specular'].default_value = 0.0
-                print(f"  Set specular values to 0 for {mesh_obj.name}")
-            except Exception as e:
-                print(f"  Warning: Could not set specular values for {mesh_obj.name}: {e}")
-            
             # Apply material based on object type
             if is_pupil:
                 # Apply solid eye color for pupil objects (only for Selections method)
                 props = bpy.context.scene.hytopia_props
                 if props.skin_method == 'SELECT':
                     print(f"  Applying solid eye color to pupil: {mesh_obj.name}")
-                    principled_node.inputs['Base Color'].default_value = props.eye_color
+                    for mat in mesh_obj.data.materials:
+                        pn = self._find_principled_node(mat)
+                        if pn and 'Base Color' in pn.inputs:
+                            pn.inputs['Base Color'].default_value = props.eye_color
                     print(f"  Applied eye color: {props.eye_color}")
                 else:
                     # For other methods, apply normal texture to pupils too
                     print(f"  Applying normal texture to pupil for non-Selections method: {mesh_obj.name}")
-                    self.apply_texture_to_principled(principled_node, texture_path, import_id)
+                    # load image then set on materials
+                    abs_texture_path = os.path.abspath(texture_path)
+                    img = bpy.data.images.get(os.path.basename(abs_texture_path)) or bpy.data.images.load(abs_texture_path)
+                    self.apply_image_to_mesh(mesh_obj, img, import_id)
             else:
                 # Apply normal texture to non-pupil objects
-                self.apply_texture_to_principled(principled_node, texture_path, import_id)
+                abs_texture_path = os.path.abspath(texture_path)
+                img = bpy.data.images.get(os.path.basename(abs_texture_path)) or bpy.data.images.load(abs_texture_path)
+                self.apply_image_to_mesh(mesh_obj, img, import_id)
             
         except Exception as e:
             print(f"Failed to apply texture to {mesh_obj.name}: {str(e)}")
@@ -1554,9 +1596,10 @@ class HYTOPIA_OT_SetHairStyle(Operator):
             hytopia_objects = [obj for obj in bpy.context.scene.objects 
                              if 'hytopia_character_' in obj.name]
             if hytopia_objects:
-                # Create a dummy import operator to access the hair visibility method
                 import_op = HYTOPIA_OT_ImportPlayer()
-                import_op.manage_hair_visibility(hytopia_objects, props, "live_update")
+                primary_mesh = import_op.find_primary_mesh(hytopia_objects)
+                if primary_mesh:
+                    import_op.apply_hair_masks_for_method(primary_mesh, props)
         
         return {'FINISHED'}
 
@@ -1588,9 +1631,10 @@ class HYTOPIA_OT_SetCustomHairType(Operator):
             hytopia_objects = [obj for obj in bpy.context.scene.objects 
                              if 'hytopia_character_' in obj.name]
             if hytopia_objects:
-                # Create a dummy import operator to access the hair visibility method
                 import_op = HYTOPIA_OT_ImportPlayer()
-                import_op.manage_hair_visibility(hytopia_objects, props, "live_update")
+                primary_mesh = import_op.find_primary_mesh(hytopia_objects)
+                if primary_mesh:
+                    import_op.apply_hair_masks_for_method(primary_mesh, props)
         
         return {'FINISHED'}
 
@@ -1646,15 +1690,15 @@ class HYTOPIA_OT_UseSelectSkin(Operator):
         
         # Eye color already has a good default (brown color picker)
         
-        # Set hair style to first available option (or keep default 3)
+        # Set hair style to first available option (or keep default 8)
         hair_style_options = texture_options_cache.get('hair_styles', [])
         if hair_style_options:
-            # Check if style 3 is available, otherwise use first available
-            style_3_available = any(item[0] == '3' for item in hair_style_options)
-            if style_3_available:
-                props.hair_style = '3'  # Keep default
+            # Check if style 8 is available, otherwise use first available
+            style_8_available = any(item[0] == '8' for item in hair_style_options)
+            if style_8_available:
+                props.hair_style = '8'
             else:
-                props.hair_style = hair_style_options[0][0]  # Use first available
+                props.hair_style = hair_style_options[0][0]
         
         # Set hair color to first available option (or keep default brown)
         hair_color_options = texture_options_cache.get('hair_colors', [])
@@ -1694,13 +1738,13 @@ class HYTOPIA_PT_MainPanel(Panel):
         layout.label(text="Import Hytopia Player Model", icon='ARMATURE_DATA')
         layout.separator()
         
-        # Model source info
+        # Source info
         box = layout.box()
-        box.label(text="Model Source:", icon='URL')
+        box.label(text="Source:", icon='URL')
         col = box.column()
         col.scale_y = 0.7
-        col.label(text="Official Hytopia Repository")
-        col.label(text="github.com/hytopiagg/assets")
+        col.label(text="Appends 'Hytopia Character' from bundled .blend")
+        col.label(text="Textures still fetched from hytopiagg/assets for Selections")
         
         layout.separator()
         
@@ -1735,8 +1779,8 @@ class HYTOPIA_PT_MainPanel(Panel):
             box.label(text="Default Skin Selected", icon='INFO')
             col = box.column()
             col.scale_y = 0.8
-            col.label(text="The character will use the default")
-            col.label(text="skin texture from the GLTF model.")
+            col.label(text="Uses embedded material from the .blend")
+            col.label(text="Hair style defaults to 8 via masks")
             
         elif props.skin_method == 'SELECT':
             # Select method - show character customization options
