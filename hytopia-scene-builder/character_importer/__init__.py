@@ -540,10 +540,28 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             # Ensure collection is linked to scene
             appended_collection = bpy.data.collections.get("Hytopia Character")
             if appended_collection:
+                # Always link as a direct child of the Scene Collection
                 scene_child_names = [c.name for c in bpy.context.scene.collection.children]
                 if appended_collection.name not in scene_child_names:
                     bpy.context.scene.collection.children.link(appended_collection)
-                print("Linked appended collection to the scene")
+
+                # If Blender auto-linked the appended collection to the currently active
+                # collection (or any other parent), unlink it from those parents so it
+                # exists ONLY under the Scene Collection.
+                try:
+                    for potential_parent in bpy.data.collections:
+                        if potential_parent is appended_collection:
+                            continue
+                        if appended_collection in potential_parent.children:
+                            # Keep only the Scene Collection as parent
+                            if potential_parent is not bpy.context.scene.collection:
+                                try:
+                                    potential_parent.children.unlink(appended_collection)
+                                except Exception as e:
+                                    print(f"Warning: Could not unlink 'Hytopia Character' from '{potential_parent.name}': {e}")
+                    print("Linked appended collection exclusively to Scene Collection")
+                except Exception as e:
+                    print(f"Warning while ensuring Scene-only linkage: {e}")
 
             # Gather newly added objects
             new_objects = list(set(bpy.context.scene.objects) - existing_objects)
@@ -557,6 +575,10 @@ class HYTOPIA_OT_ImportPlayer(Operator):
             print(f"Appended {len(new_objects)} objects from collection 'Hytopia Character'")
 
             # Ensure objects are accessible under the scene via the linked collection (no per-object relinking necessary)
+
+            # Enforce visibility rules for any custom shape meshes (cs- prefix) inside
+            # the 'Custom Shapes' sub-collection (and any imported cs- meshes in general).
+            self.hide_custom_shapes(appended_collection, new_objects)
 
             # Rename imported objects to be unique for this character
             self.rename_imported_objects(new_objects, import_id)
@@ -1303,6 +1325,48 @@ class HYTOPIA_OT_ImportPlayer(Operator):
         except Exception as e:
             print(f"Failed to apply texture to {mesh_obj.name}: {str(e)}")
     
+    def hide_custom_shapes(self, appended_collection, imported_objects):
+        """Hide all mesh objects that represent custom shapes (prefixed with 'cs-').
+
+        This targets meshes inside the 'Custom Shapes' sub-collection of the appended
+        character collection and also any imported meshes with names starting with
+        'cs-'. Both viewport and render visibility are disabled.
+        """
+        try:
+            if not imported_objects:
+                return
+
+            # Collect target objects from the 'Custom Shapes' sub-collection if present
+            target_objects = set()
+            try:
+                if appended_collection:
+                    for child_col in appended_collection.children:
+                        if child_col and child_col.name == "Custom Shapes":
+                            for obj in child_col.all_objects:
+                                if obj and obj.type == 'MESH' and obj.name.lower().startswith('cs-'):
+                                    target_objects.add(obj)
+                            break
+            except Exception as e:
+                print(f"Note: Could not traverse 'Custom Shapes' collection: {e}")
+
+            # Fallback: also consider any imported mesh with 'cs-' prefix
+            for obj in imported_objects:
+                if obj and obj.type == 'MESH' and obj.name.lower().startswith('cs-'):
+                    target_objects.add(obj)
+
+            # Apply hidden flags
+            for obj in target_objects:
+                try:
+                    obj.hide_viewport = True
+                    obj.hide_render = True
+                except Exception:
+                    pass
+
+            if target_objects:
+                print(f"Hidden {len(target_objects)} custom shape mesh(es) (cs-*) in viewport and render")
+        except Exception as e:
+            print(f"Failed to hide custom shapes: {e}")
+
     def apply_texture_to_principled(self, principled_node, texture_path, import_id):
         """Helper method to apply texture to principled BSDF node"""
         # Create and configure texture node
