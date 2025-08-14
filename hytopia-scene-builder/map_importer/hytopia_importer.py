@@ -327,7 +327,7 @@ class HytopiaWorldImporter:
             print(f"Warning: No model URI specified for entity")
             return False
             
-        model_path = os.path.join(model_base_path, model_uri)
+        model_path = self._resolve_model_path(model_base_path, model_uri)
         if not os.path.exists(model_path):
             print(f"Error: Model file not found: {model_path}")
             return False
@@ -497,6 +497,23 @@ class HytopiaWorldImporter:
             import traceback
             traceback.print_exc()
             return False
+
+    def _resolve_model_path(self, model_base_path: str, model_uri: str) -> str:
+        """Resolve model file path and de-duplicate leading folder names.
+        Handles cases like base '.../models' and uri 'models/foo.gltf' -> '.../models/foo.gltf'.
+        Also normalizes path separators.
+        """
+        # Normalize URI and strip leading separators
+        normalized_uri = (model_uri or '').replace('\\', '/').lstrip('/')
+        # De-duplicate if the first segment equals the basename of the base path
+        base_last = os.path.basename(os.path.normpath(model_base_path)) if model_base_path else ''
+        if normalized_uri:
+            parts = normalized_uri.split('/')
+            if base_last and len(parts) > 0 and parts[0].lower() == base_last.lower():
+                normalized_uri = '/'.join(parts[1:])
+        # Join and normalize
+        joined = os.path.join(model_base_path, normalized_uri)
+        return os.path.normpath(joined)
     
     def _center_model_bottom_at_origin(self, obj: bpy.types.Object):
         """

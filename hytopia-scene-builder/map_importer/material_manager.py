@@ -66,6 +66,15 @@ class HytopiaMaterialManager:
         """
         # Check if this is a multi-texture block
         is_multi_texture = block_type.get('isMultiTexture', False)
+        # Auto-detect multi-texture if textureUri points to a directory
+        try:
+            texture_uri = block_type.get('textureUri', '')
+            if not is_multi_texture and texture_uri and self.texture_base_path:
+                texture_dir = self._resolve_texture_dir(texture_uri)
+                if texture_dir and os.path.isdir(texture_dir):
+                    is_multi_texture = True
+        except Exception as _auto_e:
+            pass
         
         if is_multi_texture:
             return self._create_multi_texture_material(block_type, material_name)
@@ -371,7 +380,8 @@ class HytopiaMaterialManager:
             Blender image with combined textures, or None if failed
         """
         texture_uri = block_type.get('textureUri', '')
-        texture_dir = os.path.join(self.texture_base_path, texture_uri)
+        # Resolve the directory, handling duplicate folder segments and separators
+        texture_dir = self._resolve_texture_dir(texture_uri)
         block_name = block_type.get('name', 'unknown')
         
         # Load all face images
@@ -379,7 +389,7 @@ class HytopiaMaterialManager:
         texture_size = 16  # Default minecraft texture size
         
         for face, filename in face_mappings.items():
-            texture_path = os.path.join(texture_dir, filename)
+            texture_path = os.path.normpath(os.path.join(texture_dir, filename))
             if os.path.exists(texture_path):
                 try:
                     image = bpy.data.images.load(texture_path, check_existing=True)
@@ -471,6 +481,25 @@ class HytopiaMaterialManager:
         
         print(f"✓ Created texture atlas: {atlas_name} ({atlas_width}x{atlas_height})")
         return atlas_image
+
+    def _resolve_texture_dir(self, texture_uri: str) -> str:
+        """Resolve a texture directory by joining with base path and de-duplicating segments.
+        Examples to handle gracefully:
+        - base: .../assets/blocks, uri: blocks/log -> .../assets/blocks/log
+        - base: .../assets, uri: blocks/log -> .../assets/blocks/log
+        - Windows vs POSIX separators
+        """
+        # Normalize URI to forward slashes then split
+        normalized_uri = (texture_uri or '').replace('\\', '/').lstrip('/').rstrip('/')        
+        # De-duplicate if first segment equals basename of base path
+        base_last = os.path.basename(os.path.normpath(self.texture_base_path)) if self.texture_base_path else ''
+        if normalized_uri:
+            parts = normalized_uri.split('/')
+            if base_last and len(parts) > 0 and parts[0].lower() == base_last.lower():
+                normalized_uri = '/'.join(parts[1:])
+        # Join and normalize
+        joined = os.path.join(self.texture_base_path, normalized_uri)
+        return os.path.normpath(joined)
     
     def _get_rotated_pixels(self, image: bpy.types.Image, rotation: int, size: int) -> list:
         """

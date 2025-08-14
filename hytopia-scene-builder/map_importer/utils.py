@@ -224,22 +224,27 @@ def validate_texture_path(texture_path: str, texture_base_path: str) -> str:
     
     # Try each potential path
     for i, full_path in enumerate(potential_paths):
-        print(f"  [{i+1}] Trying: {full_path}")
-        if os.path.exists(full_path):
-            print(f"      ✓ FOUND: {full_path}")
-            return full_path
+        normalized_path = os.path.normpath(full_path)
+        print(f"  [{i+1}] Trying: {normalized_path}")
+        if os.path.exists(normalized_path):
+            if os.path.isdir(normalized_path):
+                # It's a directory; single-texture loader cannot use this
+                print(f"      ⚠ Exists but is a directory, skipping: {normalized_path}")
+            elif os.path.isfile(normalized_path):
+                print(f"      ✓ FOUND file: {normalized_path}")
+                return normalized_path
         else:
             print(f"      ✗ Not found")
         
         # Try alternative extensions for each path
-        base, ext = os.path.splitext(full_path)
+        base, ext = os.path.splitext(normalized_path)
         for alt_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tga']:
-            if full_path.endswith(alt_ext):
+            if normalized_path.endswith(alt_ext):
                 continue
             alt_path = base + alt_ext
             print(f"    Alt: {alt_path}")
-            if os.path.exists(alt_path):
-                print(f"      ✓ FOUND: {alt_path}")
+            if os.path.isfile(alt_path):
+                print(f"      ✓ FOUND file: {alt_path}")
                 return alt_path
     
     print(f"❌ Texture not found after trying {len(potential_paths)} locations:")
